@@ -164,7 +164,25 @@ fun AlbumDetailScreen(
             }
         }
     }
-    val sortedAlbumSongs = remember(filteredAlbumSongs, sortMode) { filteredAlbumSongs.sortedForAlbumDetail(sortMode) }
+    val sortedAlbumSongs = remember(filteredAlbumSongs, sortMode, com.ella.music.ui.LibrarySortUiState.randomSortSeed) { filteredAlbumSongs.sortedForAlbumDetail(sortMode) }
+    fun shuffleAlbumAndStart() {
+        val queueSongs = if (sortMode == AlbumDetailSongSortMode.Random) {
+            val seed = LibrarySortUiState.reshuffleRandomSort()
+            scope.launch { mainViewModel.settingsManager.setRandomSortSeed(seed) }
+            LibrarySortUiState.randomizedSongs(filteredAlbumSongs, seed)
+        } else {
+            filteredAlbumSongs.shuffled()
+        }
+        if (queueSongs.isNotEmpty()) {
+            playerViewModel.setShuffledPlaylist(
+                queueSongs,
+                0,
+                resumeCategoryKey = com.ella.music.data.CategoryResumeKeys.album(albumId),
+                preserveOrder = true
+            )
+            if (openPlayerOnPlay) onNavigateToPlayer()
+        }
+    }
     val sortedAlbumSongIndexById = remember(sortedAlbumSongs) {
         buildMap {
             sortedAlbumSongs.forEachIndexed { index, song -> put(song.id, index) }
@@ -190,10 +208,7 @@ fun AlbumDetailScreen(
     ) {
         value = withContext(Dispatchers.IO) {
             albumSongs.asSequence()
-                .mapNotNull { song ->
-                    mainViewModel.getAlbumCoverArtBitmap(song)
-                        ?: mainViewModel.getOriginalCoverModel(song)
-                }
+                .mapNotNull { song -> mainViewModel.getOriginalCoverModel(song) }
                 .firstOrNull()
         }
     }
@@ -320,7 +335,9 @@ fun AlbumDetailScreen(
                 mainViewModel = mainViewModel,
                 fallbackSong = albumSongs.firstOrNull(),
                 categoryType = "composer",
-                coverCandidates = librarySongs
+                coverCandidates = librarySongs,
+                artistCoverName = composer,
+                artistCoverSong = selectMetadataCategoryCoverSong(librarySongs, "composer", composer) ?: selectArtistCoverSong(librarySongs, composer)
             )
         }
     }
@@ -332,7 +349,9 @@ fun AlbumDetailScreen(
                 mainViewModel = mainViewModel,
                 fallbackSong = albumSongs.firstOrNull(),
                 categoryType = "arranger",
-                coverCandidates = librarySongs
+                coverCandidates = librarySongs,
+                artistCoverName = arranger,
+                artistCoverSong = selectMetadataCategoryCoverSong(librarySongs, "arranger", arranger) ?: selectArtistCoverSong(librarySongs, arranger)
             )
         }
     }
@@ -344,7 +363,9 @@ fun AlbumDetailScreen(
                 mainViewModel = mainViewModel,
                 fallbackSong = albumSongs.firstOrNull(),
                 categoryType = "lyricist",
-                coverCandidates = librarySongs
+                coverCandidates = librarySongs,
+                artistCoverName = lyricist,
+                artistCoverSong = selectMetadataCategoryCoverSong(librarySongs, "lyricist", lyricist) ?: selectArtistCoverSong(librarySongs, lyricist)
             )
         }
     }
@@ -419,6 +440,7 @@ fun AlbumDetailScreen(
             songs = albumSongs,
             coverModel = albumPreviewModel,
             releaseDate = albumReleaseDate,
+            neteaseAlbumUrl = neteaseAlbumUrl,
             onBack = { showIntroduction = false }
         )
         return
@@ -498,11 +520,20 @@ fun AlbumDetailScreen(
                     onCoverClick = { coverPreviewVisible = true },
                     onPlayAll = {
                         if (sortedAlbumSongs.isNotEmpty()) {
-                            playerViewModel.setPlaylist(
-                                sortedAlbumSongs,
-                                0,
-                                resumeCategoryKey = com.ella.music.data.CategoryResumeKeys.album(albumId)
-                            )
+                            if (sortMode == AlbumDetailSongSortMode.Random) {
+                                playerViewModel.setShuffledPlaylist(
+                                    sortedAlbumSongs,
+                                    0,
+                                    resumeCategoryKey = com.ella.music.data.CategoryResumeKeys.album(albumId),
+                                    preserveOrder = true
+                                )
+                            } else {
+                                playerViewModel.setPlaylist(
+                                    sortedAlbumSongs,
+                                    0,
+                                    resumeCategoryKey = com.ella.music.data.CategoryResumeKeys.album(albumId)
+                                )
+                            }
                             if (openPlayerOnPlay) onNavigateToPlayer()
                         }
                     }
@@ -520,14 +551,7 @@ fun AlbumDetailScreen(
                     leadingContent = {
                         ShuffleAllSummaryButton(
                             visible = !selection.selectionMode && sortedAlbumSongs.isNotEmpty(),
-                            onClick = {
-                                playerViewModel.setShuffledPlaylist(
-                                    sortedAlbumSongs,
-                                    0,
-                                    resumeCategoryKey = com.ella.music.data.CategoryResumeKeys.album(albumId)
-                                )
-                                if (openPlayerOnPlay) onNavigateToPlayer()
-                            }
+                            onClick = ::shuffleAlbumAndStart
                         )
                     }
                 )
@@ -540,11 +564,20 @@ fun AlbumDetailScreen(
                     playbackStats = playbackStats,
                     currentSong = currentSong,
                     onContinue = { index ->
-                        playerViewModel.setPlaylist(
-                            sortedAlbumSongs,
-                            index,
-                            resumeCategoryKey = com.ella.music.data.CategoryResumeKeys.album(albumId)
-                        )
+                        if (sortMode == AlbumDetailSongSortMode.Random) {
+                            playerViewModel.setShuffledPlaylist(
+                                sortedAlbumSongs,
+                                index,
+                                resumeCategoryKey = com.ella.music.data.CategoryResumeKeys.album(albumId),
+                                preserveOrder = true
+                            )
+                        } else {
+                            playerViewModel.setPlaylist(
+                                sortedAlbumSongs,
+                                index,
+                                resumeCategoryKey = com.ella.music.data.CategoryResumeKeys.album(albumId)
+                            )
+                        }
                         if (openPlayerOnPlay) onNavigateToPlayer()
                     }
                 )
@@ -588,7 +621,8 @@ fun AlbumDetailScreen(
                                     sortMode == AlbumDetailSongSortMode.FileNameDesc
                             ) {
                                 song.fileName.ifBlank { song.path.substringAfterLast('/') }
-                            } else null
+                            } else null,
+                            isRandomSort = sortMode == AlbumDetailSongSortMode.Random
                         )
                     }
                 }
@@ -622,7 +656,8 @@ fun AlbumDetailScreen(
                                 sortMode == AlbumDetailSongSortMode.FileNameDesc
                         ) {
                             song.fileName.ifBlank { song.path.substringAfterLast('/') }
-                        } else null
+                        } else null,
+                        isRandomSort = sortMode == AlbumDetailSongSortMode.Random
                     )
                 }
             }
@@ -806,6 +841,15 @@ fun AlbumDetailScreen(
                             scope.launch { mainViewModel.settingsManager.setAlbumDetailSongSortIndex(mode.ordinal) }
                             scrollToTopRequest++
                         }
+                    ) + listOf(
+                        com.ella.music.ui.components.randomSortDropdownItem(
+                            selected = sortMode == AlbumDetailSongSortMode.Random,
+                            onSelect = {
+                                LibrarySortUiState.albumDetailSongSortIndex = AlbumDetailSongSortMode.Random.ordinal
+                                scope.launch { mainViewModel.settingsManager.setAlbumDetailSongSortIndex(AlbumDetailSongSortMode.Random.ordinal) }
+                                scrollToTopRequest++
+                            }
+                        )
                     )
                     )
                 }

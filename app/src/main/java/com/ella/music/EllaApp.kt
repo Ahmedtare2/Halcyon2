@@ -42,6 +42,7 @@ class EllaApp : Application() {
         AppLogStore.info(this, "EllaApp", "Application started")
         HyperOsFairMemoryAdapter.initialize(this)
         AppMemoryTrimAdapter.initialize(this)
+        com.ella.music.plugin.i18n.PluginLocales.initialize(this)
 
         val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val settingsManager = SettingsManager.getInstance(this)

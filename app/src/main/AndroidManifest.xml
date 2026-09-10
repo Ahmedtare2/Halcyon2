@@ -34,6 +34,7 @@
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
@@ -107,7 +108,6 @@
         <service
             android:name=".shizuku.ShizukuShellService"
             android:exported="true"
-            android:permission="android.permission.BIND_JOB_SERVICE"
             tools:ignore="Instantiatable" />
 
         <provider
@@ -176,6 +176,8 @@
             android:name=".SpectrumViewerActivity"
             android:label="@string/song_more_view_spectrum"
             android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:enableOnBackInvokedCallback="true"
             android:theme="@style/Theme.Ella">
             <intent-filter>

@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -29,22 +28,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.ella.music.R
 import com.ella.music.data.SettingsManager
 import com.ella.music.player.BluetoothAutoPlayReceiver
-import com.ella.music.ui.components.EllaMiuixDialog
-import com.ella.music.ui.components.EllaMiuixDialogActions
-import com.ella.music.ui.components.EllaMiuixTextField
 import com.ella.music.ui.components.EllaSmallTopAppBar
 import com.ella.music.viewmodel.PlayerViewModel
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Back
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -62,7 +57,7 @@ fun AudioSettingsScreen(
     val scope = rememberCoroutineScope()
     val settingsManager = remember { SettingsManager.getInstance(context) }
     val isDark = MiuixTheme.colorScheme.background.luminance() < 0.5f
-    val pageBackground = if (isDark) Color(0xFF101014) else Color(0xFFF4F4F7)
+    val pageBackground = com.ella.music.ui.components.ellaPageBackground()
     val bluetoothAutoPlayPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -78,6 +73,7 @@ fun AudioSettingsScreen(
 
     val gaplessPlayback by settingsManager.gaplessPlayback.collectAsState(initial = true)
     val karaokeAccompanimentEnabled by settingsManager.karaokeAccompanimentEnabled.collectAsState(initial = false)
+    val crossfadeEnabled by settingsManager.crossfadeEnabled.collectAsState(initial = false)
     val crossfadeDurationMs by settingsManager.crossfadeDurationMs.collectAsState(initial = 0)
     val crossfadeCurve by settingsManager.crossfadeCurve.collectAsState(
         initial = SettingsManager.CROSSFADE_CURVE_EQUAL_POWER
@@ -89,13 +85,15 @@ fun AudioSettingsScreen(
         initial = SettingsManager.DEFAULT_PLAY_COUNT_THRESHOLD_DURATION_MS
     )
     var showCrossfadeDurationDialog by remember { mutableStateOf(false) }
-    var crossfadeDurationInput by remember { mutableStateOf("") }
     val replayGainMode by settingsManager.replayGainMode.collectAsState(initial = SettingsManager.REPLAY_GAIN_OFF)
     val resumePlaybackPosition by settingsManager.resumePlaybackPosition.collectAsState(initial = false)
     val audioFocusDisabled by settingsManager.audioFocusDisabled.collectAsState(initial = false)
     val shuffleMode by settingsManager.shuffleMode.collectAsState(initial = SettingsManager.SHUFFLE_MODE_PSEUDO)
+    val shuffleReshuffleOnStartup by settingsManager.shuffleReshuffleOnStartup.collectAsState(initial = false)
+    val disableSequentialPlayback by settingsManager.disableSequentialPlayback.collectAsState(initial = false)
     val playNextMode by settingsManager.playNextMode.collectAsState(initial = SettingsManager.PLAY_NEXT_MODE_REVERSE_STACK)
     val previousButtonAction by settingsManager.previousButtonAction.collectAsState(initial = SettingsManager.PREVIOUS_BUTTON_PREVIOUS)
+    val pausedSwitchMode by settingsManager.pausedSwitchMode.collectAsState(initial = SettingsManager.PAUSED_SWITCH_MODE_KEEP_PAUSED)
     val decoderMode by settingsManager.decoderMode.collectAsState(initial = 2)
     val audioOutputBackend by settingsManager.audioOutputBackend.collectAsState(initial = SettingsManager.AUDIO_OUTPUT_BACKEND_AUTO)
     val audioOutputBitDepth by settingsManager.audioOutputBitDepth.collectAsState(initial = SettingsManager.AUDIO_OUTPUT_BIT_DEPTH_AUTO)
@@ -169,6 +167,11 @@ fun AudioSettingsScreen(
         stringResource(R.string.settings_previous_button_replay_current)
     )
     val selectedPreviousButtonAction = previousButtonAction.coerceIn(previousButtonLabels.indices)
+    val pausedSwitchModeLabels = listOf(
+        stringResource(R.string.settings_paused_switch_keep_paused),
+        stringResource(R.string.settings_paused_switch_play)
+    )
+    val selectedPausedSwitchMode = pausedSwitchMode.coerceIn(pausedSwitchModeLabels.indices)
     val replayGainLabels = listOf(
         stringResource(R.string.settings_replay_gain_off),
         stringResource(R.string.settings_replay_gain_track),
@@ -277,6 +280,16 @@ fun AudioSettingsScreen(
         DropdownItem(
             title = previousButtonLabels[SettingsManager.PREVIOUS_BUTTON_REPLAY_CURRENT],
             summary = stringResource(R.string.settings_previous_button_replay_current_summary)
+        )
+    )
+    val pausedSwitchModeEntries = listOf(
+        DropdownItem(
+            title = pausedSwitchModeLabels[SettingsManager.PAUSED_SWITCH_MODE_KEEP_PAUSED],
+            summary = stringResource(R.string.settings_paused_switch_keep_paused_summary)
+        ),
+        DropdownItem(
+            title = pausedSwitchModeLabels[SettingsManager.PAUSED_SWITCH_MODE_PLAY],
+            summary = stringResource(R.string.settings_paused_switch_play_summary)
         )
     )
     val playNextModeEntries = listOf(
@@ -423,34 +436,50 @@ fun AudioSettingsScreen(
                             scope.launch { settingsManager.setKaraokeAccompanimentEnabled(it) }
                         }
                     )
-                    ArrowPreference(
+                    SwitchPreference(
                         title = stringResource(R.string.settings_crossfade),
-                        summary = stringResource(
-                            R.string.settings_crossfade_summary_with_value,
-                            stringResource(
-                                R.string.settings_crossfade_value,
-                                crossfadeDurationMs / 1_000f
-                            )
-                        ),
-                        onClick = {
-                            crossfadeDurationInput = String.format(
-                                java.util.Locale.ROOT,
-                                "%.2f",
-                                crossfadeDurationMs / 1_000.0
-                            )
-                            showCrossfadeDurationDialog = true
+                        summary = stringResource(R.string.settings_crossfade_summary),
+                        checked = crossfadeEnabled,
+                        onCheckedChange = { enabled ->
+                            scope.launch {
+                                settingsManager.setCrossfadeEnabled(enabled)
+                            }
                         }
                     )
-                    WindowSpinnerPreference(
-                        title = stringResource(R.string.settings_crossfade_curve),
-                        summary = stringResource(R.string.settings_crossfade_curve_summary),
-                        items = crossfadeCurveEntries,
-                        selectedIndex = selectedCrossfadeCurve,
-                        enabled = crossfadeDurationMs > 0,
-                        onSelectedIndexChange = { curve ->
-                            scope.launch { settingsManager.setCrossfadeCurve(curve) }
+                    if (crossfadeEnabled) {
+                        Column {
+                            SettingsIntSliderPreference(
+                                title = stringResource(R.string.settings_crossfade_duration),
+                                summary = "",
+                                value = (crossfadeDurationMs / 10).coerceIn(1, 1_200),
+                                valueRange = 1..1_200,
+                                valueText = stringResource(
+                                    R.string.settings_crossfade_value,
+                                    crossfadeDurationMs / 1_000f
+                                ),
+                                steps = 0,
+                                showKeyPoints = false,
+                                onClick = { showCrossfadeDurationDialog = true },
+                                holdDownState = showCrossfadeDurationDialog,
+                                onValueChange = { centiseconds ->
+                                    scope.launch {
+                                        settingsManager.setCrossfadeDurationMs(
+                                            (centiseconds * 10).coerceIn(10, 12_000)
+                                        )
+                                    }
+                                }
+                            )
+                            WindowSpinnerPreference(
+                                title = stringResource(R.string.settings_crossfade_curve),
+                                summary = stringResource(R.string.settings_crossfade_curve_summary),
+                                items = crossfadeCurveEntries,
+                                selectedIndex = selectedCrossfadeCurve,
+                                onSelectedIndexChange = { curve ->
+                                    scope.launch { settingsManager.setCrossfadeCurve(curve) }
+                                }
+                            )
                         }
-                    )
+                    }
                     SettingsIntSliderPreference(
                         title = stringResource(R.string.settings_play_count_percent),
                         summary = stringResource(
@@ -534,6 +563,23 @@ fun AudioSettingsScreen(
                             playerViewModel?.setShuffleMode(index)
                         }
                     )
+                    SwitchPreference(
+                        title = stringResource(R.string.settings_shuffle_reshuffle_on_startup),
+                        summary = stringResource(R.string.settings_shuffle_reshuffle_on_startup_summary),
+                        checked = shuffleReshuffleOnStartup,
+                        onCheckedChange = { enabled ->
+                            scope.launch { settingsManager.setShuffleReshuffleOnStartup(enabled) }
+                        }
+                    )
+                    SwitchPreference(
+                        title = stringResource(R.string.settings_disable_sequential_playback),
+                        summary = stringResource(R.string.settings_disable_sequential_playback_summary),
+                        checked = disableSequentialPlayback,
+                        onCheckedChange = { enabled ->
+                            playerViewModel?.setDisableSequentialPlayback(enabled)
+                                ?: scope.launch { settingsManager.setDisableSequentialPlayback(enabled) }
+                        }
+                    )
                     WindowSpinnerPreference(
                         title = stringResource(R.string.settings_play_next_mode),
                         summary = stringResource(R.string.settings_play_next_mode_summary),
@@ -552,6 +598,16 @@ fun AudioSettingsScreen(
                         onSelectedIndexChange = { index ->
                             scope.launch { settingsManager.setPreviousButtonAction(index) }
                             playerViewModel?.setPreviousButtonAction(index)
+                        }
+                    )
+                    WindowSpinnerPreference(
+                        title = stringResource(R.string.settings_paused_switch_mode),
+                        summary = stringResource(R.string.settings_paused_switch_mode_summary),
+                        items = pausedSwitchModeEntries,
+                        selectedIndex = selectedPausedSwitchMode,
+                        onSelectedIndexChange = { index ->
+                            scope.launch { settingsManager.setPausedSwitchMode(index) }
+                            playerViewModel?.setPausedSwitchMode(index)
                         }
                     )
                 }
@@ -588,48 +644,16 @@ fun AudioSettingsScreen(
         }
     }
 
-    EllaMiuixDialog(
+    SettingsSecondsInputDialog(
         show = showCrossfadeDurationDialog,
         title = stringResource(R.string.settings_crossfade_duration),
-        summary = stringResource(R.string.settings_crossfade_duration_summary),
-        onDismissRequest = { showCrossfadeDurationDialog = false }
-    ) {
-        Column {
-            EllaMiuixTextField(
-                value = crossfadeDurationInput,
-                onValueChange = { value ->
-                    crossfadeDurationInput = value.filter { character ->
-                        character.isDigit() || character == '.' || character == ','
-                    }
-                },
-                label = stringResource(R.string.settings_crossfade_duration_seconds),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
-            )
-            EllaMiuixDialogActions(
-                cancelText = stringResource(R.string.common_cancel),
-                confirmText = stringResource(R.string.common_save),
-                onCancel = { showCrossfadeDurationDialog = false },
-                onConfirm = {
-                    val normalizedInput = crossfadeDurationInput.trim().replace(',', '.')
-                    val seconds = normalizedInput.toDoubleOrNull()
-                    val hasValidPrecision = normalizedInput.matches(
-                        Regex("""\d{1,2}(?:\.\d{0,2})?""")
-                    )
-                    if (!hasValidPrecision || seconds == null || seconds !in 0.0..12.0) {
-                        Toast.makeText(
-                            context,
-                            context.getString(R.string.settings_crossfade_duration_invalid),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        val durationMs = ((seconds * 100.0).roundToInt() * 10)
-                            .coerceIn(0, 12_000)
-                        scope.launch { settingsManager.setCrossfadeDurationMs(durationMs) }
-                        showCrossfadeDurationDialog = false
-                    }
-                },
-                modifier = Modifier.padding(top = 16.dp)
-            )
+        summary = stringResource(R.string.settings_duration_input_range, 0.01f, 12f),
+        valueMs = crossfadeDurationMs.coerceIn(10, 12_000),
+        minMs = 10,
+        maxMs = 12_000,
+        onDismissRequest = { showCrossfadeDurationDialog = false },
+        onSave = { durationMs ->
+            scope.launch { settingsManager.setCrossfadeDurationMs(durationMs) }
         }
-    }
+    )
 }

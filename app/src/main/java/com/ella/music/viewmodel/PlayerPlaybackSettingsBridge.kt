@@ -41,6 +41,19 @@ internal class PlayerPlaybackSettingsBridge(
         }
     }
 
+    fun initShufflePolicies() {
+        scope.launch {
+            settingsManager.shuffleReshuffleOnStartup.distinctUntilChanged().collect { enabled ->
+                playerManager.setShuffleReshuffleOnStartup(enabled)
+            }
+        }
+        scope.launch {
+            settingsManager.disableSequentialPlayback.distinctUntilChanged().collect { enabled ->
+                playerManager.setDisableSequentialPlayback(enabled)
+            }
+        }
+    }
+
     fun initPlayNextMode() {
         scope.launch {
             settingsManager.playNextMode.distinctUntilChanged().collect { mode ->

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -325,7 +326,8 @@ internal fun AlbumSongRow(
     onMore: () -> Unit,
     showPlayNextInLists: Boolean,
     titleOverride: String? = null,
-    dragSelectedSongs: List<Song> = emptyList()
+    dragSelectedSongs: List<Song> = emptyList(),
+    isRandomSort: Boolean = false
 ) {
     AlbumTrackRow(
         song = song,
@@ -346,13 +348,23 @@ internal fun AlbumSongRow(
                 return@AlbumTrackRow
             }
             val safeIndex = index.coerceAtLeast(0)
-            playerViewModel.setPlaylist(
-                sortedAlbumSongs,
-                safeIndex,
-                resumeCategoryKey = sortedAlbumSongs.firstOrNull()?.let {
-                    com.ella.music.data.CategoryResumeKeys.album(it.albumIdentityId())
-                }
-            )
+            val resumeKey = sortedAlbumSongs.firstOrNull()?.let {
+                com.ella.music.data.CategoryResumeKeys.album(it.albumIdentityId())
+            }
+            if (isRandomSort) {
+                playerViewModel.setShuffledPlaylist(
+                    sortedAlbumSongs,
+                    safeIndex,
+                    resumeCategoryKey = resumeKey,
+                    preserveOrder = true
+                )
+            } else {
+                playerViewModel.setPlaylist(
+                    sortedAlbumSongs,
+                    safeIndex,
+                    resumeCategoryKey = resumeKey
+                )
+            }
             if (openPlayerOnPlay) onNavigateToPlayer()
         },
         showPlayNextInLists = showPlayNextInLists,
@@ -574,7 +586,7 @@ internal fun AlbumHeader(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .height(124.dp)
+                    .heightIn(min = 124.dp)
                     .padding(top = 2.dp)
             ) {
                 Text(
@@ -614,12 +626,12 @@ internal fun AlbumHeader(
                     modifier = Modifier
                         .clip(RoundedCornerShape(999.dp))
                         .clickable(onClick = onIntroductionClick)
-                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = stringResource(R.string.album_introduction_entry),
-                        fontSize = 14.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                     )
@@ -627,7 +639,7 @@ internal fun AlbumHeader(
                         imageVector = MiuixIcons.Basic.ArrowRight,
                         contentDescription = null,
                         tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(13.dp)
                     )
                 }
             }

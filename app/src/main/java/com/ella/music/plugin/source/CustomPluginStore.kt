@@ -2,6 +2,8 @@ package com.ella.music.plugin.source
 
 import android.content.Context
 import android.net.Uri
+import com.ella.music.plugin.i18n.PluginLocales
+import com.ella.music.plugin.i18n.PluginStrings
 import com.ella.music.plugin.model.PluginManifest
 import com.ella.music.plugin.runtime.HostApiRegistry
 import kotlinx.coroutines.Dispatchers
@@ -56,12 +58,15 @@ class CustomPluginStore(
 
     private fun loadPlugin(dir: File): LyricoPluginSource {
         val manifest = json.decodeFromString<PluginManifest>(File(dir, "manifest.json").readText())
-        validateManifest(manifest, dir)
+        val strings = runCatching { PluginStrings.load(dir, manifest) }.getOrNull()
+        validateManifest(manifest, dir, strings)
+        val localizedManifest = strings?.snapshot(PluginLocales.preferences.value)?.localize(manifest) ?: manifest
         return LyricoPluginSource(
-            manifest = manifest,
+            manifest = localizedManifest,
             assetDir = dir.absolutePath,
             script = buildScript(dir, manifest),
-            cacheRootDir = File(context.cacheDir, "lyrico_plugin_cache")
+            cacheRootDir = File(context.cacheDir, "lyrico_plugin_cache"),
+            strings = strings
         )
     }
 
@@ -76,8 +81,10 @@ class CustomPluginStore(
     private fun loadBundledPlugin(directoryName: String): LyricoPluginSource {
         val pluginRoot = "$BUNDLED_PLUGIN_ROOT/$directoryName"
         val manifest = json.decodeFromString<PluginManifest>(readAssetText("$pluginRoot/manifest.json"))
+        val strings = runCatching { PluginStrings.loadFromAssets(context.assets, pluginRoot, manifest) }.getOrNull()
         validateManifestBasics(manifest)
         require(assetExists("$pluginRoot/${manifest.entry}")) { "Missing plugin entry file" }
+        val localizedManifest = strings?.snapshot(PluginLocales.preferences.value)?.localize(manifest) ?: manifest
         val includeSources = manifest.includeDirs
             .flatMap { includeDir -> assetFilesUnder("$pluginRoot/$includeDir") }
             .filter { it.endsWith(".js", ignoreCase = true) }
@@ -89,7 +96,7 @@ class CustomPluginStore(
             }
             .sortedBy { it.path }
         return LyricoPluginSource(
-            manifest = manifest,
+            manifest = localizedManifest,
             assetDir = "asset://$pluginRoot",
             script = composeScript(
                 manifest = manifest,
@@ -97,7 +104,8 @@ class CustomPluginStore(
                 entryContent = readAssetText("$pluginRoot/${manifest.entry}")
             ),
             cacheRootDir = File(context.cacheDir, "lyrico_plugin_cache"),
-            bundled = true
+            bundled = true,
+            strings = strings
         )
     }
 
@@ -202,13 +210,17 @@ class CustomPluginStore(
 
     private fun readAndValidateManifest(pluginDir: File): PluginManifest {
         val manifest = json.decodeFromString<PluginManifest>(File(pluginDir, "manifest.json").readText())
-        validateManifest(manifest, pluginDir)
-        return manifest
+        val strings = runCatching { PluginStrings.load(pluginDir, manifest) }.getOrNull()
+        validateManifest(manifest, pluginDir, strings)
+        return strings?.snapshot(PluginLocales.preferences.value)?.localize(manifest) ?: manifest
     }
 
-    private fun validateManifest(manifest: PluginManifest, pluginDir: File) {
+    private fun validateManifest(manifest: PluginManifest, pluginDir: File, strings: PluginStrings? = null) {
         validateManifestBasics(manifest)
         require(File(pluginDir, manifest.entry).isFile) { "Missing plugin entry file" }
+        if (manifest.i18n != null && strings == null) {
+            PluginStrings.load(pluginDir, manifest)
+        }
     }
 
     private fun validateManifestBasics(manifest: PluginManifest) {

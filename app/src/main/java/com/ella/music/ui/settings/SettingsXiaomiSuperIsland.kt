@@ -181,30 +181,17 @@ internal fun SettingsXiaomiSuperIslandControls() {
         onSelected = { update(settings.copy(actionStyle = it)) }
     )
     if (settings.actionStyle == XiaomiSuperIslandSettings.ACTION_STYLE_MEDIA_CONTROLS) {
-        val notificationStyleLabels = listOf(
-            stringResource(R.string.settings_xiaomi_super_island_style_standard),
-            stringResource(R.string.settings_xiaomi_super_island_style_advanced)
+        val mediaLayoutLabels = listOf(
+            stringResource(R.string.settings_xiaomi_super_island_buttons_two),
+            stringResource(R.string.settings_xiaomi_super_island_buttons_three)
         )
         SuperIslandSpinner(
-            title = stringResource(R.string.settings_xiaomi_super_island_notification_style),
-            summary = stringResource(R.string.settings_xiaomi_super_island_notification_style_summary),
-            labels = notificationStyleLabels,
-            selectedIndex = settings.notificationStyle,
-            onSelected = { update(settings.copy(notificationStyle = it)) }
+            title = stringResource(R.string.settings_xiaomi_super_island_button_layout),
+            summary = stringResource(R.string.settings_xiaomi_super_island_button_layout_summary),
+            labels = mediaLayoutLabels,
+            selectedIndex = settings.mediaButtonLayout,
+            onSelected = { update(settings.copy(mediaButtonLayout = it)) }
         )
-        if (settings.notificationStyle == XiaomiSuperIslandSettings.NOTIFICATION_STYLE_STANDARD) {
-            val mediaLayoutLabels = listOf(
-                stringResource(R.string.settings_xiaomi_super_island_buttons_two),
-                stringResource(R.string.settings_xiaomi_super_island_buttons_three)
-            )
-            SuperIslandSpinner(
-                title = stringResource(R.string.settings_xiaomi_super_island_button_layout),
-                summary = stringResource(R.string.settings_xiaomi_super_island_button_layout_summary),
-                labels = mediaLayoutLabels,
-                selectedIndex = settings.mediaButtonLayout,
-                onSelected = { update(settings.copy(mediaButtonLayout = it)) }
-            )
-        }
     }
     SmallTitle(text = stringResource(R.string.settings_xiaomi_super_island_compat_section))
     val xmsfLabels = listOf(

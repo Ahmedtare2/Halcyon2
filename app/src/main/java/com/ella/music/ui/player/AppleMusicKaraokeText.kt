@@ -15,12 +15,15 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -32,11 +35,19 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.sp
 import com.ella.music.data.SettingsManager
 import com.ella.music.data.model.LyricWord
+import com.ella.music.data.parser.isKanjiOrHangul
+import com.ella.music.data.parser.isRtlText
 import kotlin.math.cos
 import kotlin.math.PI
 import kotlin.math.sin
@@ -45,7 +56,7 @@ internal fun isInlineRubyPronunciation(text: String): Boolean {
     val compact = text.filterNot { it.isWhitespace() }
     if (compact.isEmpty()) return false
     if (compact.any { it.isAppleMusicLatinLetter() }) return false
-    return compact.any { it.isAppleMusicCjkIdeograph() || it.isAppleMusicKana() }
+    return compact.any { it.isAppleMusicKana() || it.isKanjiOrHangul() }
 }
 
 private fun Char.isAppleMusicKana(): Boolean {
@@ -85,6 +96,7 @@ internal fun TimedLyricText(
     splitRubyByCharacter: Boolean = false,
     rubyStyle: TextStyle? = null,
     onWordClick: ((Long) -> Unit)? = null,
+    onLongPress: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // TTML may encode the blank before a word as part of that word. Move it to the prior
@@ -125,11 +137,15 @@ internal fun TimedLyricText(
         TextAlign.Center -> Arrangement.Center
         else -> Arrangement.Start
     }
+    // The clock ticks every frame. Hand the words a State they read in the draw/layer phase
+    // instead of a value they take as a parameter, so a frame no longer recomposes the whole
+    // line's worth of word subtrees just to move one feathered edge.
+    val positionState = rememberUpdatedState(positionMs)
     val content: @Composable () -> Unit = {
         timedWords.forEachIndexed { index, renderWord ->
             AppleMusicKaraokeWord(
                 renderWord = renderWord,
-                positionMs = positionMs,
+                positionMs = positionState,
                 active = active,
                 baseStyle = style,
                 contentColor = contentColor,
@@ -139,7 +155,8 @@ internal fun TimedLyricText(
                 ruby = rubies.getOrNull(index).orEmpty(),
                 rubyStyle = rubyStyle,
                 rubyBelow = rubyBelow,
-                onWordClick = onWordClick
+                onWordClick = onWordClick,
+                onLongPress = onLongPress
             )
         }
     }
@@ -150,6 +167,7 @@ internal fun TimedLyricText(
                 positionMs = positionMs,
                 active = active,
                 horizontalArrangement = horizontalArrangement,
+                rubyBelow = rubyBelow,
                 modifier = modifier,
                 content = content
             )
@@ -157,7 +175,7 @@ internal fun TimedLyricText(
             Row(
                 modifier = modifier.then(if (statusBarMarquee) Modifier.basicMarquee() else Modifier),
                 horizontalArrangement = horizontalArrangement,
-                verticalAlignment = Alignment.Bottom
+                verticalAlignment = if (rubyBelow) Alignment.Top else Alignment.Bottom
             ) {
                 content()
             }
@@ -169,6 +187,7 @@ internal fun TimedLyricText(
         // the full line width so every row shares the exact same alignment anchor.
         AppleMusicTimedWordRows(
             textAlign = style.textAlign,
+            rubyBelow = rubyBelow,
             modifier = modifier
         ) {
             content()
@@ -187,6 +206,7 @@ private fun AppleMusicFocusedTimedRow(
     positionMs: Long,
     active: Boolean,
     horizontalArrangement: Arrangement.Horizontal,
+    rubyBelow: Boolean = false,
     modifier: Modifier,
     content: @Composable () -> Unit
 ) {
@@ -209,17 +229,18 @@ private fun AppleMusicFocusedTimedRow(
         LaunchedEffect(targetOffset) {
             animatedOffset.animateTo(
                 targetValue = targetOffset,
-                animationSpec = tween(durationMillis = 180)
+                animationSpec = tween(durationMillis = 90)
             )
         }
+        val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
         Row(
             modifier = Modifier
                 .width(IntrinsicSize.Max)
                 .wrapContentWidth(unbounded = true)
                 .onSizeChanged { contentWidthPx = it.width }
-                .graphicsLayer { translationX = -animatedOffset.value },
+                .graphicsLayer { translationX = if (isRtl) animatedOffset.value else -animatedOffset.value },
             horizontalArrangement = horizontalArrangement,
-            verticalAlignment = Alignment.Bottom
+            verticalAlignment = if (rubyBelow) Alignment.Top else Alignment.Bottom
         ) {
             content()
         }
@@ -229,6 +250,7 @@ private fun AppleMusicFocusedTimedRow(
 @Composable
 private fun AppleMusicTimedWordRows(
     textAlign: TextAlign,
+    rubyBelow: Boolean = false,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
@@ -276,8 +298,10 @@ private fun AppleMusicTimedWordRows(
                     else -> 0
                 }
                 rows[rowIndex].forEach { placeable ->
-                    // Bottom-align so furigana grows upward instead of dropping the kanji.
-                    placeable.placeRelative(x, y + rowHeights[rowIndex] - placeable.height)
+                    // Bottom-align when ruby is above so furigana grows upward without dropping the kanji.
+                    // Top-align when ruby is below so furigana grows downward without raising the kanji.
+                    val placeableY = if (rubyBelow) y else y + rowHeights[rowIndex] - placeable.height
+                    placeable.placeRelative(x, placeableY)
                     x += placeable.width
                 }
                 y += rowHeights[rowIndex]
@@ -289,7 +313,7 @@ private fun AppleMusicTimedWordRows(
 @Composable
 private fun AppleMusicKaraokeWord(
     renderWord: AppleMusicRenderWord,
-    positionMs: Long,
+    positionMs: State<Long>,
     active: Boolean,
     baseStyle: TextStyle,
     contentColor: Color,
@@ -299,32 +323,28 @@ private fun AppleMusicKaraokeWord(
     ruby: String = "",
     rubyStyle: TextStyle? = null,
     rubyBelow: Boolean = false,
-    onWordClick: ((Long) -> Unit)? = null
+    onWordClick: ((Long) -> Unit)? = null,
+    onLongPress: (() -> Unit)? = null
 ) {
     val word = renderWord.word
-    val progress = if (active) ((positionMs - word.startMs).toFloat() / (word.endMs - word.startMs).coerceAtLeast(1L))
-        .coerceIn(0f, 1f)
-    else 0f
-    val bright = contentColor.copy(alpha = baseStyle.color.alpha)
-    val dim = contentColor.copy(alpha = baseStyle.color.alpha * 0.36f)
-    val sustainGlow = renderWord.sustainGlowAlpha(positionMs, active)
-    val visibleSustainGlow = sustainGlow * sustainGlowScale.coerceIn(0f, 1f)
-    val sustainDurationMs = renderWord.sustainDurationMs
-    val textSizePx = with(LocalDensity.current) { baseStyle.fontSize.toPx() }
-    // The reference renderer moves each word independently by 6% of the text size (at least
-    // 5 px), then adds only a 3% bottom-anchored scale during the held-note phase. Keeping the
-    // transform on the word rather than the whole line is what creates the floating vocal feel.
-    val liftPx = appleMusicKaraokeLiftPx(
-        wordLiftEnabled = wordLiftEnabled,
-        textSizePx = textSizePx,
-        progress = progress,
-        wordLiftScale = wordLiftScale
-    )
     val rubyContent: @Composable () -> Unit = {
         if (ruby.isNotBlank() && rubyStyle != null) {
+            val tracking = when {
+                ruby.length >= 5 -> (-0.55).sp
+                ruby.length >= 4 -> (-0.30).sp
+                else -> (-0.10).sp
+            }
+            val scaledRubyStyle = if (ruby.length >= 5) {
+                rubyStyle.copy(
+                    fontSize = rubyStyle.fontSize * 0.88f,
+                    letterSpacing = tracking
+                )
+            } else {
+                rubyStyle.copy(letterSpacing = tracking)
+            }
             BasicText(
                 text = ruby,
-                style = rubyStyle,
+                style = scaledRubyStyle,
                 maxLines = 1,
                 overflow = TextOverflow.Clip
             )
@@ -335,104 +355,230 @@ private fun AppleMusicKaraokeWord(
         modifier = Modifier
             .then(
                 if (onWordClick != null) {
-                    Modifier.pointerInput(word.startMs, onWordClick) {
-                        detectTapGestures(onTap = { onWordClick(word.startMs) })
+                    Modifier.pointerInput(word.startMs, onWordClick, onLongPress) {
+                        detectTapGestures(
+                            onTap = { onWordClick(word.startMs) },
+                            onLongPress = onLongPress?.let { press -> { press() } }
+                        )
                     }
                 } else Modifier
             )
+            // The reference renderer moves each word independently by 6% of the text size (at
+            // least 5 px), then adds only a 3% bottom-anchored scale during the held-note phase.
+            // Keeping the transform on the word rather than the whole line is what creates the
+            // floating vocal feel. Reading the clock inside the layer block keeps the lift on the
+            // layer phase, so a 20-word line no longer recomposes 20 subtrees per frame.
             .graphicsLayer {
-                translationY = -liftPx
-                // Keep the glyph box stable during a held note. Pulsing scale changes are perceived
-                // as character jitter on the desktop overlay, especially with long TTML spans.
-                transformOrigin = TransformOrigin(0.5f, 1f)
+                translationY = -appleMusicKaraokeLiftPx(
+                    wordLiftEnabled = wordLiftEnabled,
+                    textSizePx = baseStyle.fontSize.toPx(),
+                    progress = renderWord.karaokeProgress(positionMs.value, active),
+                    wordLiftScale = wordLiftScale
+                )
+                transformOrigin = TransformOrigin(0.5f, if (rubyBelow) 0f else 1f)
             }
     ) {
         if (!rubyBelow) rubyContent()
-        Box {
-        if (visibleSustainGlow > 0f) {
-            val durationScale = ((sustainDurationMs - 600L).coerceAtLeast(0L) / 2_400f)
-                .coerceIn(0f, 1f)
-            val haloAlpha = (0.12f + durationScale * 0.16f) * visibleSustainGlow * baseStyle.color.alpha
-            BasicText(
-                text = word.text,
-                style = baseStyle.copy(
-                    color = contentColor.copy(alpha = haloAlpha),
-                    shadow = Shadow(
-                        color = contentColor.copy(alpha = (0.72f + durationScale * 0.20f) * visibleSustainGlow),
-                        offset = Offset.Zero,
-                        blurRadius = (14f + durationScale * 12f) * visibleSustainGlow
-                    )
-                )
-            )
-        }
-        val glowShadow = visibleSustainGlow.takeIf { it > 0f }?.let { glowAlpha ->
-            Shadow(
-                color = contentColor.copy(alpha = baseStyle.color.alpha * glowAlpha),
-                offset = Offset.Zero,
-                blurRadius = 10f * glowAlpha
-            )
-        }
-        val dimStyle = remember(baseStyle, dim) { baseStyle.copy(color = dim) }
-        val brightStyle = remember(baseStyle, bright, glowShadow) {
-            baseStyle.copy(color = bright, shadow = glowShadow)
-        }
-        when {
-            progress <= 0f -> BasicText(text = word.text, style = dimStyle)
-            progress >= 1f -> BasicText(
-                text = word.text,
-                style = brightStyle
-            )
-            else -> {
-                BasicText(text = word.text, style = dimStyle)
-                // Use a real alpha gradient for the karaoke edge. A hard clip makes the sweep
-                // disappear on devices where BasicText is rendered through a cached paragraph;
-                // the brush keeps the soft feathered/逐字扫过效果 visible while preserving the
-                // dim text underneath.
-                BasicText(
-                    text = word.text,
-                    style = baseStyle.copy(
-                        brush = Brush.horizontalGradient(
-                            colorStops = arrayOf(
-                                0f to bright,
-                                (progress - 0.15f).coerceAtLeast(0f) to bright,
-                                progress to Color.Transparent,
-                                1f to Color.Transparent
-                            )
-                        ),
-                        shadow = glowShadow
-                    )
-                )
-                // A narrow material sheen follows the karaoke edge. Long-held words strengthen
-                // that band and add a restrained halo; ordinary words keep the feathered fill
-                // without inheriting a permanent outline around the entire active line.
-                // A second moving highlight on every short syllable can be perceived as two
-                // independent karaoke progress bars. Reserve the material sheen for an actual
-                // held note; ordinary syllables now have one unambiguous feathered edge.
-                if (visibleSustainGlow > 0.05f) {
-                    val sheenStart = (progress - 0.20f).coerceAtLeast(0f)
-                    val sheenPeak = (progress - 0.055f).coerceIn(sheenStart, progress)
-                    val sheenEnd = (progress + 0.045f).coerceAtMost(1f)
-                    val sheenAlpha = (0.20f + visibleSustainGlow * 0.42f) * baseStyle.color.alpha
-                    BasicText(
-                        text = word.text,
-                        style = baseStyle.copy(
-                            brush = Brush.horizontalGradient(
-                                colorStops = arrayOf(
-                                    0f to Color.Transparent,
-                                    sheenStart to Color.Transparent,
-                                    sheenPeak to contentColor.copy(alpha = sheenAlpha),
-                                    sheenEnd to Color.Transparent,
-                                    1f to Color.Transparent
-                                )
-                            )
-                        )
-                    )
-                }
-            }
-        }
+        AppleMusicKaraokeGlyphs(
+            renderWord = renderWord,
+            positionMs = positionMs,
+            active = active,
+            baseStyle = baseStyle,
+            contentColor = contentColor,
+            sustainGlowScale = sustainGlowScale
+        )
         if (rubyBelow) rubyContent()
     }
 }
+
+/** Holds the last measured paragraph so the draw phase can reuse it without re-laying out text. */
+private class KaraokeGlyphLayout {
+    var value: TextLayoutResult? = null
+}
+
+/**
+ * One karaoke unit, measured once and repainted from the playback clock.
+ *
+ * The previous renderer stacked up to four [BasicText] children per word and rebuilt their
+ * [TextStyle]s from `positionMs` on every frame, so an active line re-entered composition — and
+ * the sweeping word re-entered text layout — 120 times a second. Every visual pass is kept here
+ * (dim base, feathered sweep, sustain halo and its travelling sheen, held-note glow); they are
+ * simply issued as `drawText` calls against one cached [TextLayoutResult], which is the one thing
+ * that must not be recomputed per frame.
+ */
+@Composable
+private fun AppleMusicKaraokeGlyphs(
+    renderWord: AppleMusicRenderWord,
+    positionMs: State<Long>,
+    active: Boolean,
+    baseStyle: TextStyle,
+    contentColor: Color,
+    sustainGlowScale: Float
+) {
+    val word = renderWord.word
+    val measurer = rememberTextMeasurer()
+    val cache = remember { KaraokeGlyphLayout() }
+    val baseAlpha = baseStyle.color.alpha
+    val bright = contentColor.copy(alpha = baseAlpha)
+    val dim = contentColor.copy(alpha = baseAlpha * 0.36f)
+    val sustainDurationMs = renderWord.sustainDurationMs
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl || word.text.isRtlText()
+
+    Layout(
+        modifier = Modifier.drawBehind {
+            val layout = cache.value ?: return@drawBehind
+            val clock = positionMs.value
+            val progress = renderWord.karaokeProgress(clock, active)
+            val glow = renderWord.sustainGlowAlpha(clock, active) * sustainGlowScale.coerceIn(0f, 1f)
+
+            if (glow > 0f) {
+                // A long held note grows a soft halo around the glyph before the fill reaches it.
+                val durationScale = ((sustainDurationMs - 600L).coerceAtLeast(0L) / 2_400f)
+                    .coerceIn(0f, 1f)
+                drawText(
+                    textLayoutResult = layout,
+                    color = contentColor.copy(
+                        alpha = ((0.05f + durationScale * 0.08f) * glow * baseAlpha).coerceIn(0f, 1f)
+                    ),
+                    shadow = Shadow(
+                        color = contentColor.copy(
+                            alpha = ((0.32f + durationScale * 0.14f) * glow * baseAlpha).coerceIn(0f, 1f)
+                        ),
+                        offset = Offset.Zero,
+                        blurRadius = (8f + durationScale * 6f) * glow
+                    )
+                )
+            }
+            val glowShadow = glow.takeIf { it > 0.05f }?.let { glowAlpha ->
+                Shadow(
+                    color = contentColor.copy(alpha = 0.24f * baseAlpha * glowAlpha),
+                    offset = Offset.Zero,
+                    blurRadius = 6f * glowAlpha
+                )
+            }
+            val wordWidth = layout.size.width.toFloat().coerceAtLeast(1f)
+            when {
+                progress <= 0f -> drawText(textLayoutResult = layout, color = dim)
+                progress >= 1f -> drawText(
+                    textLayoutResult = layout,
+                    color = bright,
+                    shadow = glowShadow
+                )
+                else -> {
+                    drawText(textLayoutResult = layout, color = dim)
+                    // A real alpha gradient rather than a hard clip: the sweep keeps its soft
+                    // feathered edge while the dim glyph stays legible underneath it.
+                    drawText(
+                        textLayoutResult = layout,
+                        brush = Brush.horizontalGradient(
+                            colorStops = karaokeFillStops(progress, bright, isRtl),
+                            startX = 0f,
+                            endX = wordWidth
+                        ),
+                        shadow = glowShadow
+                    )
+                    // A narrow material sheen follows the karaoke edge. Reserve it for an actual
+                    // held note: on every short syllable a second moving highlight reads as two
+                    // independent progress bars.
+                    if (glow > 0.05f) {
+                        drawText(
+                            textLayoutResult = layout,
+                            brush = Brush.horizontalGradient(
+                                colorStops = karaokeSheenStops(
+                                    progress = progress,
+                                    contentColor = contentColor,
+                                    glow = glow,
+                                    baseAlpha = baseAlpha,
+                                    isRtl = isRtl
+                                ),
+                                startX = 0f,
+                                endX = wordWidth
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    ) { _, constraints ->
+        val cached = cache.value
+        val layout = if (
+            cached != null &&
+            cached.layoutInput.text.text == word.text &&
+            cached.layoutInput.style == baseStyle &&
+            cached.layoutInput.constraints == constraints &&
+            cached.layoutInput.layoutDirection == layoutDirection &&
+            cached.layoutInput.density.density == density &&
+            cached.layoutInput.density.fontScale == fontScale
+        ) {
+            cached
+        } else {
+            measurer.measure(
+                text = word.text,
+                style = baseStyle,
+                overflow = TextOverflow.Clip,
+                constraints = constraints,
+                layoutDirection = layoutDirection,
+                density = this
+            ).also { cache.value = it }
+        }
+        layout(layout.size.width, layout.size.height) {}
+    }
+}
+
+private fun AppleMusicRenderWord.karaokeProgress(positionMs: Long, active: Boolean): Float =
+    if (active) {
+        ((positionMs - word.startMs).toFloat() / (word.endMs - word.startMs).coerceAtLeast(1L))
+            .coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+
+internal fun karaokeFillStops(
+    progress: Float,
+    bright: Color,
+    isRtl: Boolean
+): Array<Pair<Float, Color>> = if (isRtl) {
+    arrayOf(
+        0f to Color.Transparent,
+        (1f - progress).coerceAtLeast(0f) to Color.Transparent,
+        (1f - (progress - 0.15f)).coerceIn(0f, 1f) to bright,
+        1f to bright
+    )
+} else {
+    arrayOf(
+        0f to bright,
+        (progress - 0.15f).coerceAtLeast(0f) to bright,
+        progress to Color.Transparent,
+        1f to Color.Transparent
+    )
+}
+
+internal fun karaokeSheenStops(
+    progress: Float,
+    contentColor: Color,
+    glow: Float,
+    baseAlpha: Float,
+    isRtl: Boolean
+): Array<Pair<Float, Color>> {
+    val sheenAlpha = (0.10f + glow * 0.20f) * baseAlpha
+    return if (isRtl) {
+        arrayOf(
+            0f to Color.Transparent,
+            (1f - (progress + 0.045f)).coerceAtLeast(0f) to Color.Transparent,
+            (1f - (progress - 0.055f)).coerceIn(0f, 1f) to contentColor.copy(alpha = sheenAlpha),
+            (1f - (progress - 0.20f)).coerceAtMost(1f) to Color.Transparent,
+            1f to Color.Transparent
+        )
+    } else {
+        val sheenStart = (progress - 0.20f).coerceAtLeast(0f)
+        arrayOf(
+            0f to Color.Transparent,
+            sheenStart to Color.Transparent,
+            (progress - 0.055f).coerceIn(sheenStart, progress) to contentColor.copy(alpha = sheenAlpha),
+            (progress + 0.045f).coerceAtMost(1f) to Color.Transparent,
+            1f to Color.Transparent
+        )
+    }
 }
 
 internal fun rubiesForTimedWords(
@@ -488,9 +634,132 @@ internal fun assignRubySpansToWords(
     return result
 }
 
+private fun attachRubyBySyllables(words: List<LyricWord>, reading: String): List<String> {
+    val tokens = reading.trim().split(Regex("""\s+""")).filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return List(words.size) { "" }
+
+    val charToWord = mutableListOf<Int>()
+    val surface = buildString {
+        words.forEachIndexed { index, word ->
+            word.text.forEach { character ->
+                append(character)
+                charToWord += index
+            }
+        }
+    }
+    val rubyByWord = MutableList(words.size) { mutableListOf<String>() }
+    var sIdx = 0
+    var tIdx = 0
+
+    while (sIdx < surface.length) {
+        val character = surface[sIdx]
+        if (character.isWhitespace()) {
+            sIdx++
+            continue
+        }
+
+        if (character.isKanjiOrHangul()) {
+            var runEnd = sIdx + 1
+            while (runEnd < surface.length && surface[runEnd].isKanjiOrHangul()) {
+                runEnd++
+            }
+            val runLength = runEnd - sIdx
+
+            // Look ahead for the next Latin anchor in surface
+            var nextLatinMatch: Int? = null
+            var restIdx = runEnd
+            while (restIdx < surface.length) {
+                val restChar = surface[restIdx]
+                if (restChar.isAppleMusicLatinLetter()) {
+                    var wordEnd = restIdx + 1
+                    while (wordEnd < surface.length && (surface[wordEnd].isAppleMusicLatinLetter() || surface[wordEnd] in "'’-")) {
+                        wordEnd++
+                    }
+                    val latinWord = surface.substring(restIdx, wordEnd).filter { it.isAppleMusicLatinLetter() }.lowercase()
+                    if (latinWord.isNotEmpty()) {
+                        for (tokI in tIdx until tokens.size) {
+                            val normTok = tokens[tokI].filter { it.isAppleMusicLatinLetter() }.lowercase()
+                            if (normTok == latinWord) {
+                                nextLatinMatch = tokI
+                                break
+                            }
+                        }
+                    }
+                    break
+                }
+                restIdx++
+            }
+
+            val consumed = if (nextLatinMatch != null) {
+                maxOf(1, nextLatinMatch - tIdx)
+            } else {
+                val remTokens = tokens.size - tIdx
+                val remKanji = (runEnd until surface.length).count { surface[it].isKanjiOrHangul() }
+                if (remKanji > 0) {
+                    maxOf(1, minOf(runLength, remTokens - remKanji))
+                } else {
+                    remTokens
+                }
+            }
+
+            val tokEnd = minOf(tokens.size, tIdx + consumed)
+            val assignedTokens = tokens.subList(tIdx, tokEnd)
+            tIdx = tokEnd
+
+            if (assignedTokens.size == runLength) {
+                assignedTokens.forEachIndexed { i, tok ->
+                    rubyByWord[charToWord[sIdx + i]].add(tok)
+                }
+            } else if (assignedTokens.size == 1) {
+                rubyByWord[charToWord[sIdx]].add(assignedTokens[0])
+            } else {
+                for (i in 0 until minOf(runLength, assignedTokens.size)) {
+                    val tok = if (i == runLength - 1 && assignedTokens.size > runLength) {
+                        assignedTokens.subList(i, assignedTokens.size).joinToString(" ")
+                    } else {
+                        assignedTokens[i]
+                    }
+                    rubyByWord[charToWord[sIdx + i]].add(tok)
+                }
+            }
+            sIdx = runEnd
+        } else if (character.isAppleMusicLatinLetter()) {
+            var wordEnd = sIdx + 1
+            while (wordEnd < surface.length && (surface[wordEnd].isAppleMusicLatinLetter() || surface[wordEnd] in "'’-")) {
+                wordEnd++
+            }
+            val latinWord = surface.substring(sIdx, wordEnd).filter { it.isAppleMusicLatinLetter() }.lowercase()
+            if (tIdx < tokens.size) {
+                val normTok = tokens[tIdx].filter { it.isAppleMusicLatinLetter() }.lowercase()
+                if (normTok == latinWord) {
+                    tIdx++
+                }
+            }
+            sIdx = wordEnd
+        } else {
+            if (tIdx < tokens.size && tokens[tIdx] == character.toString()) {
+                tIdx++
+            }
+            sIdx++
+        }
+    }
+
+    return rubyByWord.map { it.joinToString(" ") }
+}
+
 internal fun attachRubyByCorrespondence(words: List<LyricWord>, reading: String): List<String> {
     if (words.isEmpty()) return emptyList()
-    val readingChars = reading.filterNot { it.isWhitespace() }.toList()
+    val cleanReading = reading.trim()
+    if (cleanReading.isBlank()) return List(words.size) { "" }
+
+    if (cleanReading.contains(' ') || cleanReading.any { it.isAppleMusicLatinLetter() }) {
+        val syllableAligned = attachRubyBySyllables(words, cleanReading)
+        if (syllableAligned.any { it.isNotBlank() }) {
+            return syllableAligned
+        }
+    }
+
+    val readingChars = cleanReading.filterNot { it.isWhitespace() }.toList()
     if (readingChars.isEmpty()) return List(words.size) { "" }
 
     val charToWord = mutableListOf<Int>()
@@ -621,12 +890,7 @@ private fun timedRangesOverlap(first: LyricWord, second: LyricWord): Boolean =
 private fun overlapMs(first: LyricWord, second: LyricWord): Long =
     (minOf(first.endMs, second.endMs) - maxOf(first.startMs, second.startMs)).coerceAtLeast(0L)
 
-private fun Char.isAppleMusicCjkIdeograph(): Boolean {
-    val block = Character.UnicodeBlock.of(this)
-    return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
-        block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A ||
-        block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B
-}
+private fun Char.isAppleMusicCjkIdeograph(): Boolean = isKanjiOrHangul()
 
 private fun AppleMusicRenderWord.sustainGlowAlpha(positionMs: Long, active: Boolean): Float {
     val sustainEndMs = sustainEndMs ?: return 0f
@@ -714,7 +978,10 @@ internal fun LyricWord.shouldSplitForAppleMusicCharacters(
     sustainThresholdMs: Int = SettingsManager.DEFAULT_APPLE_MUSIC_LYRICS_SUSTAIN_THRESHOLD_MS
 ): Boolean {
     if (endMs - startMs < sustainThresholdMs.coerceAtLeast(0).toLong() || text.length <= 1) return false
-    return text.any { it.isAppleMusicLatinLetter() || it.isAppleMusicCjkCharacter() }
+    // Latin words should never be split into characters across line wraps.
+    // Whole words are kept intact so that "stranger" never breaks into "stra" and "nger".
+    if (text.any { it.isAppleMusicLatinLetter() }) return false
+    return text.any { it.isAppleMusicCjkCharacter() }
 }
 
 private fun Char.isAppleMusicLatinLetter(): Boolean = this in 'a'..'z' || this in 'A'..'Z'

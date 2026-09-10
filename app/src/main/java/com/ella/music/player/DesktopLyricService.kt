@@ -31,6 +31,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.ella.music.R
 import com.ella.music.ui.components.ScriptFontPaths
+import com.ella.music.ui.player.ensureBundledInterPath
 import com.ella.music.ui.player.ensureBundledMiSansBoldPath
 import com.ella.music.ui.player.PlayerPalette
 import com.ella.music.ui.player.coverContentColor
@@ -489,7 +490,7 @@ class DesktopLyricService : Service() {
 
     private fun closeByUser() {
         userHidden = true
-        serviceScope.launch { SettingsManager.getInstance(this@DesktopLyricService).setDesktopLyricEnabled(false) }
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { SettingsManager.getInstance(applicationContext).setDesktopLyricEnabled(false) }
         rootView?.let { runCatching { windowManager.removeView(it) } }
         rootView = null
         lyricView = null
@@ -836,10 +837,11 @@ class DesktopLyricService : Service() {
         // When "apply font to desktop lyric" is off, pass an empty path so the lyric view falls
         // back to the system default typeface instead of the custom lyric font.
         lyricFontPath = if (settingsManager.lyricFontApplyToDesktop.first()) {
+            val defaultInterPath = ensureBundledInterPath(this@DesktopLyricService)
             val defaultCjkPath = ensureBundledMiSansBoldPath(this@DesktopLyricService)
             val western = settingsManager.lyricOriginalWesternFontPath.first()
                 .ifBlank { settingsManager.lyricWesternFontPath.first() }
-                .ifBlank { defaultCjkPath }
+                .ifBlank { defaultInterPath }
             val cjk = settingsManager.lyricOriginalCjkFontPath.first()
                 .ifBlank { settingsManager.lyricCjkFontPath.first() }
                 .ifBlank { defaultCjkPath }
@@ -1130,6 +1132,12 @@ class DesktopLyricService : Service() {
             Color.rgb(255, 224, 150),
             Color.rgb(255, 87, 34)
         )
-        private var userHidden = false
+        @Volatile
+        internal var userHidden = false
+            private set
+
+        fun resetUserHidden() {
+            userHidden = false
+        }
     }
 }

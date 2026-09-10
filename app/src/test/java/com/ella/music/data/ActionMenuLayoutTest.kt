@@ -80,4 +80,10 @@ class ActionMenuLayoutTest {
             layout.order
         )
     }
+
+    @Test
+    fun listDefaultsIncludesSingleAndIdenticalRecentPlaybackActions() {
+        assertTrue(ActionMenuIds.DELETE_SINGLE_RECENT_PLAYBACK in ActionMenuIds.listDefaults)
+        assertTrue(ActionMenuIds.CLEAR_RECENT_PLAYBACK in ActionMenuIds.listDefaults)
+    }
 }

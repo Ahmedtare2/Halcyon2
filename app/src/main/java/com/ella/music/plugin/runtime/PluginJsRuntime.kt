@@ -19,7 +19,7 @@ import com.whl.quickjs.wrapper.QuickJSContext
  */
 @Keep
 class PluginJsRuntime(
-    hostApi: QuickJsHostApi = QuickJsHostApi()
+    private val hostApi: QuickJsHostApi = QuickJsHostApi()
 ) : AutoCloseable {
 
     private val context: QuickJSContext = QuickJSContext.create().also { ctx ->
@@ -33,11 +33,13 @@ class PluginJsRuntime(
     }
 
     fun eval(script: String, filename: String) {
+        hostApi.beginInvocation()
         context.evaluate(script, filename)
     }
 
     /** Invoke a global entry function with a JSON request, returning its JSON-stringified result. */
     fun call(functionName: String, requestJson: String): String {
+        hostApi.beginInvocation()
         val invoke: JSFunction = context.globalObject.getJSFunction("__invoke")
         val result = invoke.call(functionName, requestJson)
         return result as? String ?: "null"
@@ -123,6 +125,12 @@ class PluginJsRuntime(
               };
 
               globalThis.Platform = {
+                i18n: {
+                  getLocale: function() { return hostCall("i18n.getLocale", {}); },
+                  t: function(key) {
+                    return hostCall("i18n.t", { key: String(key), args: Array.prototype.slice.call(arguments, 1) });
+                  }
+                },
                 app: globalThis.app,
                 runtime: globalThis.runtime,
 

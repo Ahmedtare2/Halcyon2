@@ -178,10 +178,34 @@ class GlowGlowProgressBar @JvmOverloads constructor(
 
     private fun createHeadBitmapShader(): BitmapShader {
         val bytes = Base64.decode(HEAD_PNG_BASE64, Base64.DEFAULT)
-        val bitmap = requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
-        headWidth = bitmap.width.toFloat()
-        headHeight = bitmap.height.toFloat()
-        return BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        val originalBitmap = requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+        val w = originalBitmap.width
+        val h = originalBitmap.height
+
+        // Clear outer border pixels to ensure transparent edges, preventing any clamping bleed
+        val cleanBitmap = originalBitmap.copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+        val pixels = IntArray(w * h)
+        cleanBitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        for (y in 0 until h) {
+            for (x in 0 until 3) {
+                pixels[y * w + x] = 0
+            }
+            pixels[y * w + (w - 1)] = 0
+        }
+        for (x in 0 until w) {
+            pixels[x] = 0
+            pixels[(h - 1) * w + x] = 0
+        }
+        cleanBitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+
+        headWidth = w.toFloat()
+        headHeight = h.toFloat()
+        val tileMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Shader.TileMode.DECAL
+        } else {
+            Shader.TileMode.CLAMP
+        }
+        return BitmapShader(cleanBitmap, tileMode, tileMode)
     }
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
@@ -293,12 +317,14 @@ class GlowGlowProgressBar @JvmOverloads constructor(
                 float startFade = smoothstep(0.0, uTrackSize.y / uTrackSize.x * (hsize.x / hsize.y) * 1.5, st.x);
                 st.x -= mix(uTrackSize.y / 2.0, uTrackSize.x - uTrackSize.y / 2.0, progress) / uTrackSize.x;
                 st.y -= 0.5;
-                st.x /= (uTrackSize.y / thight) * (hsize.x / uTrackSize.x);
-                st.y /= (uTrackSize.y / thight) * (hsize.y / uTrackSize.y);
+                float headScale = clamp(uTrackSize.y / thight, 0.75, 1.15);
+                st.x /= headScale * (hsize.x / uTrackSize.x);
+                st.y /= headScale * (hsize.y / uTrackSize.y);
                 st.y += 0.5;
                 st.x -= -xoffset / hsize.x;
-                vec4 head = uTex.eval(st * uHeadSize);
-                head *= startFade * uHeadGlowAlpha;
+                vec2 clampedSt = clamp(st, 0.0, 1.0);
+                float inBounds = step(0.0, st.x) * step(st.x, 1.0) * step(0.0, st.y) * step(st.y, 1.0);
+                vec4 head = uTex.eval(clampedSt * uHeadSize) * (startFade * uHeadGlowAlpha * inBounds);
                 return alphaBlend(head, vec4(a));
             }
 

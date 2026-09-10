@@ -30,6 +30,7 @@ internal class EllaLibrarySessionCallback(
             .add(SessionCommand(PlaybackService.ACTION_TOGGLE_DESKTOP_LYRIC, Bundle.EMPTY))
             .add(SessionCommand(PlaybackService.ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY))
             .add(SessionCommand(PlaybackService.ACTION_UPDATE_NOTIFICATION_LYRIC, Bundle.EMPTY))
+            .add(SessionCommand(PlaybackService.ACTION_SYNC_PLAYBACK_MODE, Bundle.EMPTY))
             .build()
         // Media3 intentionally gives untrusted controllers read-only player commands by
         // default. That prevents external widgets from sending the normal transport commands
@@ -59,10 +60,10 @@ internal class EllaLibrarySessionCallback(
         customCommand: SessionCommand,
         args: Bundle
     ): ListenableFuture<SessionResult> {
-        val handled = if (customCommand.customAction == PlaybackService.ACTION_UPDATE_NOTIFICATION_LYRIC) {
-            service.updateNotificationLyricPresentation(args)
-        } else {
-            service.handleNotificationCustomAction(customCommand.customAction)
+        val handled = when (customCommand.customAction) {
+            PlaybackService.ACTION_UPDATE_NOTIFICATION_LYRIC -> service.updateNotificationLyricPresentation(args)
+            PlaybackService.ACTION_SYNC_PLAYBACK_MODE -> service.syncPlaybackModeFromApp(args)
+            else -> service.handleNotificationCustomAction(customCommand.customAction)
         }
         val result = if (handled) {
             SessionResult(SessionResult.RESULT_SUCCESS)
