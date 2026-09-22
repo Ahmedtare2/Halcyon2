@@ -142,22 +142,62 @@ internal fun TimedLyricText(
     // line's worth of word subtrees just to move one feathered edge.
     val positionState = rememberUpdatedState(positionMs)
     val content: @Composable () -> Unit = {
-        timedWords.forEachIndexed { index, renderWord ->
-            AppleMusicKaraokeWord(
-                renderWord = renderWord,
-                positionMs = positionState,
-                active = active,
-                baseStyle = style,
-                contentColor = contentColor,
-                wordLiftEnabled = wordLiftEnabled,
-                wordLiftScale = wordLiftScale,
-                sustainGlowScale = sustainGlowScale,
-                ruby = rubies.getOrNull(index).orEmpty(),
-                rubyStyle = rubyStyle,
-                rubyBelow = rubyBelow,
-                onWordClick = onWordClick,
-                onLongPress = onLongPress
-            )
+        var wordIndex = 0
+        while (wordIndex < timedWords.size) {
+            val renderWord = timedWords[wordIndex]
+            val groupKey = renderWord.characterGroupKey
+            if (groupKey == null) {
+                AppleMusicKaraokeWord(
+                    renderWord = renderWord,
+                    positionMs = positionState,
+                    active = active,
+                    baseStyle = style,
+                    contentColor = contentColor,
+                    wordLiftEnabled = wordLiftEnabled,
+                    wordLiftScale = wordLiftScale,
+                    sustainGlowScale = sustainGlowScale,
+                    ruby = rubies.getOrNull(wordIndex).orEmpty(),
+                    rubyStyle = rubyStyle,
+                    rubyBelow = rubyBelow,
+                    onWordClick = onWordClick,
+                    onLongPress = onLongPress
+                )
+                wordIndex++
+            } else {
+                // Every consecutive entry sharing this key came from splitting one original word
+                // into characters (see toAppleMusicRenderWords). Rendering them inside a single
+                // non-wrapping Row means the row-wrapping layout above only ever sees one item
+                // for the whole word, so it can never break apart across a line wrap the way
+                // handing each character to it separately would risk.
+                val groupStart = wordIndex
+                var groupEnd = wordIndex
+                while (groupEnd < timedWords.size && timedWords[groupEnd].characterGroupKey == groupKey) {
+                    groupEnd++
+                }
+                Row(
+                    horizontalArrangement = Arrangement.Start,
+                    verticalAlignment = if (rubyBelow) Alignment.Top else Alignment.Bottom
+                ) {
+                    for (charIndex in groupStart until groupEnd) {
+                        AppleMusicKaraokeWord(
+                            renderWord = timedWords[charIndex],
+                            positionMs = positionState,
+                            active = active,
+                            baseStyle = style,
+                            contentColor = contentColor,
+                            wordLiftEnabled = wordLiftEnabled,
+                            wordLiftScale = wordLiftScale,
+                            sustainGlowScale = sustainGlowScale,
+                            ruby = rubies.getOrNull(charIndex).orEmpty(),
+                            rubyStyle = rubyStyle,
+                            rubyBelow = rubyBelow,
+                            onWordClick = onWordClick,
+                            onLongPress = onLongPress
+                        )
+                    }
+                }
+                wordIndex = groupEnd
+            }
         }
     }
     if (singleLine) {
@@ -911,7 +951,12 @@ private fun AppleMusicRenderWord.sustainGlowAlpha(positionMs: Long, active: Bool
 
 private data class AppleMusicRenderWord(
     val word: LyricWord,
-    val sustainEndMs: Long? = null
+    val sustainEndMs: Long? = null,
+    // Shared by every character produced from the same original word (see
+    // toAppleMusicRenderWords), null for anything that wasn't character-split. The renderer
+    // groups consecutive entries with the same key into one non-wrapping unit — see
+    // groupIntoWrapAtomicUnits — so a split word can never break apart across a line wrap.
+    val characterGroupKey: Int? = null
 ) {
     val sustainDurationMs: Long get() = (sustainEndMs ?: word.endMs) - word.startMs
 }
@@ -952,7 +997,8 @@ private fun List<LyricWord>.toAppleMusicRenderWords(
                         startMs = segmentStart,
                         endMs = segmentEnd
                     ),
-                    sustainEndMs = word.endMs
+                    sustainEndMs = word.endMs,
+                    characterGroupKey = index
                 )
             }
         } else {
@@ -978,10 +1024,12 @@ internal fun LyricWord.shouldSplitForAppleMusicCharacters(
     sustainThresholdMs: Int = SettingsManager.DEFAULT_APPLE_MUSIC_LYRICS_SUSTAIN_THRESHOLD_MS
 ): Boolean {
     if (endMs - startMs < sustainThresholdMs.coerceAtLeast(0).toLong() || text.length <= 1) return false
-    // Latin words should never be split into characters across line wraps.
-    // Whole words are kept intact so that "stranger" never breaks into "stra" and "nger".
-    if (text.any { it.isAppleMusicLatinLetter() }) return false
-    return text.any { it.isAppleMusicCjkCharacter() }
+    // Used to exclude Latin script entirely: a word split into one FlowRow-style item per
+    // character could break apart across a line wrap ("stranger" -> "stra" / "nger"). Now that
+    // the renderer groups every character sharing a characterGroupKey into one non-wrapping unit
+    // before handing it to the row layout (see groupIntoWrapAtomicUnits), the whole exploded word
+    // wraps as a single piece the same way it did unsplit, so this is safe for Latin too.
+    return text.any { it.isAppleMusicLatinLetter() || it.isAppleMusicCjkCharacter() }
 }
 
 private fun Char.isAppleMusicLatinLetter(): Boolean = this in 'a'..'z' || this in 'A'..'Z'
