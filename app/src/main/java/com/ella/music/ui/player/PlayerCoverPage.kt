@@ -575,7 +575,7 @@ internal fun CoverPlayerPage(
                 (useWidePlayer || !immersiveAlbumCover || usesAlternatePortraitPage)
         // Reset per song so a leftover color from the previous track never flashes before the
         // new one's first sampled frame arrives.
-        val liveReactivePalette = remember(song.id) { mutableStateOf<PlayerPalette?>(null) }
+        val liveReactivePalette = remember(song?.id) { mutableStateOf<PlayerPalette?>(null) }
         val reactiveBackgroundScope = rememberCoroutineScope()
         val wantsReactiveBackground = immersiveAlbumCover && !useWidePlayer &&
             videoPlaybackActive && portraitDynamicCover != null && !showCustomPlayerBackground
