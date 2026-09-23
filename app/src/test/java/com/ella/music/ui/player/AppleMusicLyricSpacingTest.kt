@@ -37,8 +37,24 @@ class AppleMusicLyricSpacingTest {
             appleMusicKaraokeLiftPx(wordLiftEnabled = false, textSizePx = 48f, progress = 1f)
         )
         assertTrue(
-            appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 1f) > 0f
+            appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 0.5f) > 0f
         )
+    }
+
+    @Test
+    fun liftIsATransientPopNotAPermanentElevation() {
+        // Real Apple Music lifts the syllable actually being sung right now, not every syllable
+        // that was ever sung — the lift must rise from baseline, peak somewhere in the middle of
+        // the word, and settle back to (approximately) baseline once the word finishes, rather
+        // than the old `progress * height` shape where every already-sung word stayed elevated
+        // forever afterward.
+        val atStart = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 0f)
+        val atMidpoint = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 0.5f)
+        val atEnd = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 1f)
+        assertEquals(0f, atStart)
+        assertTrue("should be lifted mid-syllable", atMidpoint > 0f)
+        assertTrue("should have settled back down by the time the word finishes", atEnd < atMidpoint)
+        assertTrue("should be back near baseline, not still elevated", atEnd < atMidpoint * 0.05f)
     }
 
     @Test
