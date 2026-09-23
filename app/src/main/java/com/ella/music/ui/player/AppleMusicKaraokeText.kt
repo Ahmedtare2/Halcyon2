@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.TransformOrigin
@@ -70,7 +71,13 @@ internal fun appleMusicKaraokeLiftPx(
     progress: Float,
     wordLiftScale: Float = 1f
 ): Float = if (wordLiftEnabled) {
-    maxOf(textSizePx * 0.06f, 5f) * progress * wordLiftScale.coerceIn(0f, 1f)
+    // Was `progress * height`, so a word only ever went up and stayed there — every already-sung
+    // word in the line would sit permanently elevated forever. Real Apple Music's lift is a
+    // transient pop timed to the syllable actually being sung right now: it rises as the word
+    // starts, peaks mid-syllable, and eases back to baseline by the time the word finishes, so at
+    // any moment only the word currently being sung is lifted, not every word that already was.
+    val bounce = kotlin.math.sin((progress.coerceIn(0f, 1f) * kotlin.math.PI).toFloat())
+    maxOf(textSizePx * 0.06f, 5f) * bounce * wordLiftScale.coerceIn(0f, 1f)
 } else {
     0f
 }
@@ -473,27 +480,30 @@ private fun AppleMusicKaraokeGlyphs(
 
             if (glow > 0f) {
                 // A long held note grows a soft halo around the glyph before the fill reaches it.
+                // Blur radius has no ceiling, so it carries most of the ~4x boost — a wider soft
+                // spread reads as "more glowing" far better than pushing alpha toward fully
+                // opaque, which would just clip into a flat blob instead of staying luminous.
                 val durationScale = ((sustainDurationMs - 600L).coerceAtLeast(0L) / 2_400f)
                     .coerceIn(0f, 1f)
                 drawText(
                     textLayoutResult = layout,
                     color = contentColor.copy(
-                        alpha = ((0.05f + durationScale * 0.08f) * glow * baseAlpha).coerceIn(0f, 1f)
+                        alpha = ((0.20f + durationScale * 0.32f) * glow * baseAlpha).coerceIn(0f, 1f)
                     ),
                     shadow = Shadow(
                         color = contentColor.copy(
-                            alpha = ((0.32f + durationScale * 0.14f) * glow * baseAlpha).coerceIn(0f, 1f)
+                            alpha = ((0.55f + durationScale * 0.30f) * glow * baseAlpha).coerceIn(0f, 1f)
                         ),
                         offset = Offset.Zero,
-                        blurRadius = (8f + durationScale * 6f) * glow
+                        blurRadius = (32f + durationScale * 24f) * glow
                     )
                 )
             }
             val glowShadow = glow.takeIf { it > 0.05f }?.let { glowAlpha ->
                 Shadow(
-                    color = contentColor.copy(alpha = 0.24f * baseAlpha * glowAlpha),
+                    color = contentColor.copy(alpha = 0.45f * baseAlpha * glowAlpha),
                     offset = Offset.Zero,
-                    blurRadius = 6f * glowAlpha
+                    blurRadius = 24f * glowAlpha
                 )
             }
             val wordWidth = layout.size.width.toFloat().coerceAtLeast(1f)
@@ -577,20 +587,29 @@ internal fun karaokeFillStops(
     progress: Float,
     bright: Color,
     isRtl: Boolean
-): Array<Pair<Float, Color>> = if (isRtl) {
-    arrayOf(
-        0f to Color.Transparent,
-        (1f - progress).coerceAtLeast(0f) to Color.Transparent,
-        (1f - (progress - 0.15f)).coerceIn(0f, 1f) to bright,
-        1f to bright
-    )
-} else {
-    arrayOf(
-        0f to bright,
-        (progress - 0.15f).coerceAtLeast(0f) to bright,
-        progress to Color.Transparent,
-        1f to Color.Transparent
-    )
+): Array<Pair<Float, Color>> {
+    // A brief near-white overshoot right at the wipe boundary, on every word — unlike the sheen
+    // below (held notes only, a second travelling band), this is baked into the single fill
+    // gradient itself, so it can't read as a competing progress indicator. This is what makes the
+    // ordinary word-to-word highlight itself look "shining" rather than just a flat color wipe.
+    val glint = lerp(bright, Color.White, 0.55f)
+    return if (isRtl) {
+        arrayOf(
+            0f to Color.Transparent,
+            (1f - progress).coerceAtLeast(0f) to Color.Transparent,
+            (1f - (progress - 0.03f)).coerceIn(0f, 1f) to glint,
+            (1f - (progress - 0.15f)).coerceIn(0f, 1f) to bright,
+            1f to bright
+        )
+    } else {
+        arrayOf(
+            0f to bright,
+            (progress - 0.15f).coerceAtLeast(0f) to bright,
+            (progress - 0.03f).coerceAtLeast(0f) to glint,
+            progress to Color.Transparent,
+            1f to Color.Transparent
+        )
+    }
 }
 
 internal fun karaokeSheenStops(
@@ -600,12 +619,13 @@ internal fun karaokeSheenStops(
     baseAlpha: Float,
     isRtl: Boolean
 ): Array<Pair<Float, Color>> {
-    val sheenAlpha = (0.10f + glow * 0.20f) * baseAlpha
+    val sheenColor = lerp(contentColor, Color.White, 0.6f)
+    val sheenAlpha = (0.22f + glow * 0.40f) * baseAlpha
     return if (isRtl) {
         arrayOf(
             0f to Color.Transparent,
             (1f - (progress + 0.045f)).coerceAtLeast(0f) to Color.Transparent,
-            (1f - (progress - 0.055f)).coerceIn(0f, 1f) to contentColor.copy(alpha = sheenAlpha),
+            (1f - (progress - 0.055f)).coerceIn(0f, 1f) to sheenColor.copy(alpha = sheenAlpha),
             (1f - (progress - 0.20f)).coerceAtMost(1f) to Color.Transparent,
             1f to Color.Transparent
         )
@@ -614,7 +634,7 @@ internal fun karaokeSheenStops(
         arrayOf(
             0f to Color.Transparent,
             sheenStart to Color.Transparent,
-            (progress - 0.055f).coerceIn(sheenStart, progress) to contentColor.copy(alpha = sheenAlpha),
+            (progress - 0.055f).coerceIn(sheenStart, progress) to sheenColor.copy(alpha = sheenAlpha),
             (progress + 0.045f).coerceAtMost(1f) to Color.Transparent,
             1f to Color.Transparent
         )
