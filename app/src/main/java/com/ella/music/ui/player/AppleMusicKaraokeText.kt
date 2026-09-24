@@ -68,15 +68,18 @@ private fun Char.isAppleMusicKana(): Boolean {
 internal fun appleMusicKaraokeLiftPx(
     wordLiftEnabled: Boolean,
     textSizePx: Float,
-    progress: Float,
-    wordLiftScale: Float = 1f
-): Float = if (wordLiftEnabled) {
-    // Was `progress * height`, so a word only ever went up and stayed there — every already-sung
-    // word in the line would sit permanently elevated forever. Real Apple Music's lift is a
-    // transient pop timed to the syllable actually being sung right now: it rises as the word
-    // starts, peaks mid-syllable, and eases back to baseline by the time the word finishes, so at
-    // any moment only the word currently being sung is lifted, not every word that already was.
-    val bounce = kotlin.math.sin((progress.coerceIn(0f, 1f) * kotlin.math.PI).toFloat())
+    elapsedSinceWordStartMs: Long,
+    wordLiftScale: Float = 1f,
+    popDurationMs: Long = 220L
+): Float = if (wordLiftEnabled && elapsedSinceWordStartMs in 0..popDurationMs) {
+    // Was tied to the word's own fill progress (0..1 across its *entire* singing duration), so a
+    // 150ms word's whole rise-and-fall happened in 150ms — too fast to read as a deliberate lift
+    // at all — while a multi-second held note stretched the same arch out gracefully, which is
+    // why only sustained/letter-split words looked like they were lifting. Real Apple Music's pop
+    // is a fixed-duration snap timed to a word's *onset*, independent of how long that word takes
+    // to sing, so every word gets the same snappy, clearly visible bounce right as it starts.
+    val t = elapsedSinceWordStartMs.toFloat() / popDurationMs.toFloat()
+    val bounce = kotlin.math.sin((t * kotlin.math.PI).toFloat())
     maxOf(textSizePx * 0.06f, 5f) * bounce * wordLiftScale.coerceIn(0f, 1f)
 } else {
     0f
@@ -419,7 +422,7 @@ private fun AppleMusicKaraokeWord(
                 translationY = -appleMusicKaraokeLiftPx(
                     wordLiftEnabled = wordLiftEnabled,
                     textSizePx = baseStyle.fontSize.toPx(),
-                    progress = renderWord.karaokeProgress(positionMs.value, active),
+                    elapsedSinceWordStartMs = (positionMs.value - renderWord.word.startMs).coerceAtLeast(0L),
                     wordLiftScale = wordLiftScale
                 )
                 transformOrigin = TransformOrigin(0.5f, if (rubyBelow) 0f else 1f)
@@ -488,22 +491,22 @@ private fun AppleMusicKaraokeGlyphs(
                 drawText(
                     textLayoutResult = layout,
                     color = contentColor.copy(
-                        alpha = ((0.20f + durationScale * 0.32f) * glow * baseAlpha).coerceIn(0f, 1f)
+                        alpha = ((0.26f + durationScale * 0.40f) * glow * baseAlpha).coerceIn(0f, 1f)
                     ),
                     shadow = Shadow(
                         color = contentColor.copy(
-                            alpha = ((0.55f + durationScale * 0.30f) * glow * baseAlpha).coerceIn(0f, 1f)
+                            alpha = ((0.65f + durationScale * 0.30f) * glow * baseAlpha).coerceIn(0f, 1f)
                         ),
                         offset = Offset.Zero,
-                        blurRadius = (32f + durationScale * 24f) * glow
+                        blurRadius = (44f + durationScale * 32f) * glow
                     )
                 )
             }
             val glowShadow = glow.takeIf { it > 0.05f }?.let { glowAlpha ->
                 Shadow(
-                    color = contentColor.copy(alpha = 0.45f * baseAlpha * glowAlpha),
+                    color = contentColor.copy(alpha = 0.55f * baseAlpha * glowAlpha),
                     offset = Offset.Zero,
-                    blurRadius = 24f * glowAlpha
+                    blurRadius = 32f * glowAlpha
                 )
             }
             val wordWidth = layout.size.width.toFloat().coerceAtLeast(1f)
