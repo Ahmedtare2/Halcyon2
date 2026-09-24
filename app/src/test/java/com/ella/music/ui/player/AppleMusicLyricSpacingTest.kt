@@ -34,27 +34,33 @@ class AppleMusicLyricSpacingTest {
     fun disablingWordLiftZeroesLiftButDoesNotDisableKaraokeProgress() {
         assertEquals(
             0f,
-            appleMusicKaraokeLiftPx(wordLiftEnabled = false, textSizePx = 48f, progress = 1f)
+            appleMusicKaraokeLiftPx(wordLiftEnabled = false, textSizePx = 48f, elapsedSinceWordStartMs = 110L)
         )
         assertTrue(
-            appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 0.5f) > 0f
+            appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 110L) > 0f
         )
     }
 
     @Test
-    fun liftIsATransientPopNotAPermanentElevation() {
-        // Real Apple Music lifts the syllable actually being sung right now, not every syllable
-        // that was ever sung — the lift must rise from baseline, peak somewhere in the middle of
-        // the word, and settle back to (approximately) baseline once the word finishes, rather
-        // than the old `progress * height` shape where every already-sung word stayed elevated
-        // forever afterward.
-        val atStart = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 0f)
-        val atMidpoint = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 0.5f)
-        val atEnd = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, progress = 1f)
+    fun liftIsAFixedDurationOnsetPopNotStretchedAcrossTheWholeWord() {
+        // Was tied to the word's own fill progress (0..1 across its entire singing duration), so
+        // a short/fast word's whole rise-and-fall completed too quickly to read as a deliberate
+        // lift, while only long held notes looked like they were lifting at all. The pop must now
+        // be a fixed ~220ms duration timed to the word's onset — rising from baseline, peaking
+        // around the midpoint of that fixed window, and settling back to baseline by the end of
+        // it — regardless of whether the underlying word itself takes 150ms or 3 seconds to sing.
+        val atStart = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 0L)
+        val atMidpoint = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 110L)
+        val atPopEnd = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 220L)
+        val longAfterPopEnds = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 3_000L)
         assertEquals(0f, atStart)
-        assertTrue("should be lifted mid-syllable", atMidpoint > 0f)
-        assertTrue("should have settled back down by the time the word finishes", atEnd < atMidpoint)
-        assertTrue("should be back near baseline, not still elevated", atEnd < atMidpoint * 0.05f)
+        assertTrue("should be lifted mid-pop", atMidpoint > 0f)
+        assertTrue("should have settled back down by the end of the fixed pop window", atPopEnd < atMidpoint)
+        assertEquals(
+            "a word that finished singing long ago must not still be lifted",
+            0f,
+            longAfterPopEnds
+        )
     }
 
     @Test
