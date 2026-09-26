@@ -498,12 +498,13 @@ private fun AppleMusicKaraokeWord(
     val hasStarted by remember(word.startMs) {
         derivedStateOf { positionMs.value >= word.startMs }
     }
+    val density = LocalDensity.current
     val restingTargetPx = if (characterMotion != null) {
         0f
     } else {
         appleMusicKaraokeRestingLiftPx(
             wordLiftEnabled = wordLiftEnabled,
-            textSizePx = baseStyle.fontSize.toPx(),
+            textSizePx = with(density) { baseStyle.fontSize.toPx() },
             isActive = active,
             hasStarted = hasStarted,
             wordLiftScale = wordLiftScale
