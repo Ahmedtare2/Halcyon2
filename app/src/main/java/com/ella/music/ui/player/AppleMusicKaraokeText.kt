@@ -1,6 +1,8 @@
 package com.ella.music.ui.player
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,6 +18,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -65,24 +68,107 @@ private fun Char.isAppleMusicKana(): Boolean {
     return block == Character.UnicodeBlock.HIRAGANA || block == Character.UnicodeBlock.KATAKANA
 }
 
-internal fun appleMusicKaraokeLiftPx(
+/**
+ * Exact port of the critically-damped unit-mass spring step response used by the reference
+ * implementation (lyrics.binimum.org — AmLyrics.ts, `springProgress`): phase = 2π·time/response,
+ * progress = 1 − (1+phase)·e^(−phase). Not an approximation — this closed form is what the
+ * reference itself uses in place of per-frame spring integration.
+ */
+private fun appleMusicSpringProgress(timeSec: Float, responseSec: Float): Float {
+    if (timeSec <= 0f) return 0f
+    val phase = (2f * kotlin.math.PI.toFloat() * timeSec) / maxOf(0.001f, responseSec)
+    return 1f - (1f + phase) * kotlin.math.exp(-phase)
+}
+
+/** Per-syllable parameters shared by every character in a letter-by-letter word — computed once
+ *  per group, not per character or per frame. Field derivations and constants (0.4/0.8 stagger
+ *  factor, response capped at 3s, emphasis/glow only ramping in past 1s of duration, the 0.5×0.1em
+ *  horizontal spread, the 2.5px lift bonus) are taken directly from the reference, not tuned. */
+internal data class AppleMusicCharacterMotionParams(
+    val durationSec: Float,
+    val charCount: Int,
+    val isCjk: Boolean
+) {
+    val staggerFactor = if (isCjk) 0.8f else 0.4f
+    val perCharDelaySec = minOf((durationSec / maxOf(1, charCount)) * staggerFactor, staggerFactor)
+    val holdSec = (2f * durationSec) / maxOf(1, charCount)
+    val responseSec = minOf(3f, durationSec)
+    // Only Latin text gets the extra emphasis/lift/glow bonus, and only once a syllable is sung
+    // slowly enough to matter (under 1s, none of this engages at all) — matching the reference,
+    // which zeroes these for CJK entirely and ramps them in for Latin only past that 1s floor.
+    val emphasis = if (isCjk) 0f else (durationSec - 1f).coerceIn(0f, 1f)
+    val glowBoost = if (isCjk) 0f else 0.45f * ((durationSec - 1f) / 0.5f).coerceIn(0f, 1f)
+}
+
+internal data class AppleMusicCharacterMotion(
+    val translateXEm: Float = 0f,
+    val translateYPx: Float = 0f,
+    val scale: Float = 1f,
+    val glowBoost: Float = 0f
+)
+
+/** The reference samples this into 61 baked keyframes per unique (duration, count, index, cjk)
+ *  combination and plays it as a native Animation timeline; Compose already gives us a per-frame
+ *  callback for free (the graphicsLayer draw phase), so evaluating the closed-form curve directly
+ *  each frame is simpler and exactly as cheap — no keyframe table to build or cache. */
+internal fun appleMusicCharacterMotionAt(
+    params: AppleMusicCharacterMotionParams,
+    charIndex: Int,
+    elapsedSinceSyllableStartMs: Long
+): AppleMusicCharacterMotion {
+    val startDelaySec = (charIndex + 1) * params.perCharDelaySec
+    val timeSec = (elapsedSinceSyllableStartMs / 1000f) - startDelaySec
+    if (timeSec < 0f) return AppleMusicCharacterMotion()
+    val rise = if (params.isCjk) {
+        // CJK uses a distinct underdamped spring (frequency √14, damping 3.5) relaxing from 1
+        // toward 0, rather than the Latin step-response curve — the reference keeps these
+        // deliberately different rather than sharing one curve across scripts.
+        1f - appleMusicUnderdampedSpring(1f, 0f, timeSec, kotlin.math.sqrt(14f), 3.5f)
+    } else {
+        appleMusicSpringProgress(timeSec, params.responseSec)
+    }
+    val envelope = appleMusicSpringProgress(timeSec, params.responseSec) *
+        (1f - appleMusicSpringProgress(timeSec - params.holdSec, params.responseSec))
+    val centerOffset = charIndex - (params.charCount - 1) / 2f
+    val x = centerOffset * 0.5f * 0.1f * params.emphasis * envelope
+    val lift = 2.5f * params.emphasis * envelope
+    val charRiseYPx = -3f
+    return AppleMusicCharacterMotion(
+        translateXEm = x,
+        translateYPx = charRiseYPx * rise - lift,
+        scale = 1f + 0.1f * params.emphasis * envelope,
+        glowBoost = params.glowBoost * envelope
+    )
+}
+
+/** Closed-form damped harmonic oscillator position at [timeSec] (unit mass), used only for the
+ *  CJK rise curve above. */
+private fun appleMusicUnderdampedSpring(
+    position: Float,
+    velocity: Float,
+    timeSec: Float,
+    frequency: Float,
+    damping: Float
+): Float {
+    val omega = kotlin.math.sqrt(frequency * frequency - damping * damping)
+    val decay = kotlin.math.exp(-damping * timeSec)
+    val cos = kotlin.math.cos(omega * timeSec)
+    val sin = kotlin.math.sin(omega * timeSec)
+    return decay * (position * cos + ((velocity + damping * position) / omega) * sin)
+}
+
+internal fun appleMusicKaraokeRestingLiftPx(
     wordLiftEnabled: Boolean,
     textSizePx: Float,
-    elapsedSinceWordStartMs: Long,
-    wordLiftScale: Float = 1f,
-    popDurationMs: Long = 220L
-): Float = if (wordLiftEnabled && elapsedSinceWordStartMs in 0..popDurationMs) {
-    // Was tied to the word's own fill progress (0..1 across its *entire* singing duration), so a
-    // 150ms word's whole rise-and-fall happened in 150ms — too fast to read as a deliberate lift
-    // at all — while a multi-second held note stretched the same arch out gracefully, which is
-    // why only sustained/letter-split words looked like they were lifting. Real Apple Music's pop
-    // is a fixed-duration snap timed to a word's *onset*, independent of how long that word takes
-    // to sing, so every word gets the same snappy, clearly visible bounce right as it starts.
-    val t = elapsedSinceWordStartMs.toFloat() / popDurationMs.toFloat()
-    val bounce = kotlin.math.sin((t * kotlin.math.PI).toFloat())
-    maxOf(textSizePx * 0.06f, 5f) * bounce * wordLiftScale.coerceIn(0f, 1f)
-} else {
-    0f
+    isActive: Boolean,
+    hasStarted: Boolean,
+    wordLiftScale: Float = 1f
+): Float {
+    if (!wordLiftEnabled || !isActive || !hasStarted) return 0f
+    // The letter-by-letter case no longer goes through this function at all — see
+    // AppleMusicCharacterMotionParams / appleMusicCharacterMotionAt above, a faithful port of the
+    // reference's actual per-character spring motion rather than a hand-rolled group arch.
+    return maxOf(textSizePx * 0.05f, 4f) * wordLiftScale.coerceIn(0f, 1f)
 }
 
 @Composable
@@ -184,6 +270,21 @@ internal fun TimedLyricText(
                 while (groupEnd < timedWords.size && timedWords[groupEnd].characterGroupKey == groupKey) {
                     groupEnd++
                 }
+                val firstChar = timedWords[groupStart]
+                val groupStartMs = firstChar.word.startMs
+                val groupDurationSec =
+                    ((firstChar.sustainEndMs ?: firstChar.word.endMs) - groupStartMs)
+                        .coerceAtLeast(1L) / 1000f
+                val groupIsCjk = (groupStart until groupEnd).any {
+                    timedWords[it].word.text.any { char -> char.isAppleMusicCjkCharacter() }
+                }
+                val motionParams = remember(groupKey, groupDurationSec, groupIsCjk) {
+                    AppleMusicCharacterMotionParams(
+                        durationSec = groupDurationSec,
+                        charCount = groupEnd - groupStart,
+                        isCjk = groupIsCjk
+                    )
+                }
                 Row(
                     horizontalArrangement = Arrangement.Start,
                     verticalAlignment = if (rubyBelow) Alignment.Top else Alignment.Bottom
@@ -201,6 +302,9 @@ internal fun TimedLyricText(
                             ruby = rubies.getOrNull(charIndex).orEmpty(),
                             rubyStyle = rubyStyle,
                             rubyBelow = rubyBelow,
+                            characterMotion = motionParams,
+                            charIndexInGroup = charIndex - groupStart,
+                            groupStartMs = groupStartMs,
                             onWordClick = onWordClick,
                             onLongPress = onLongPress
                         )
@@ -373,10 +477,43 @@ private fun AppleMusicKaraokeWord(
     ruby: String = "",
     rubyStyle: TextStyle? = null,
     rubyBelow: Boolean = false,
+    // Non-null for each character of a letter-by-letter word: params are shared across the whole
+    // group (computed once, not per character), and charIndexInGroup/groupStartMs are this
+    // character's own position within it. See AppleMusicCharacterMotionParams — this replaces the
+    // word's normal resting-lift entirely, since the reference's per-character spring motion (with
+    // stagger) already produces the coordinated word-level arch on its own.
+    characterMotion: AppleMusicCharacterMotionParams? = null,
+    charIndexInGroup: Int = 0,
+    groupStartMs: Long = 0L,
     onWordClick: ((Long) -> Unit)? = null,
     onLongPress: (() -> Unit)? = null
 ) {
     val word = renderWord.word
+    // derivedStateOf only invalidates readers when this boolean actually flips — once, the
+    // instant positionMs crosses the word's own startMs — not on every tick of the clock the
+    // way reading positionMs.value directly in the composable body would. That keeps the regular
+    // (non-letter-split) word path off the per-frame recomposition path; the character-motion
+    // path below reads the clock directly inside the layer block instead, same as the karaoke
+    // fill/glow already do, since it's a continuous curve rather than an on/off state.
+    val hasStarted by remember(word.startMs) {
+        derivedStateOf { positionMs.value >= word.startMs }
+    }
+    val restingTargetPx = if (characterMotion != null) {
+        0f
+    } else {
+        appleMusicKaraokeRestingLiftPx(
+            wordLiftEnabled = wordLiftEnabled,
+            textSizePx = baseStyle.fontSize.toPx(),
+            isActive = active,
+            hasStarted = hasStarted,
+            wordLiftScale = wordLiftScale
+        )
+    }
+    val animatedRestingLiftPx by animateFloatAsState(
+        targetValue = restingTargetPx,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "appleMusicWordLift"
+    )
     val rubyContent: @Composable () -> Unit = {
         if (ruby.isNotBlank() && rubyStyle != null) {
             val tracking = when {
@@ -413,18 +550,22 @@ private fun AppleMusicKaraokeWord(
                     }
                 } else Modifier
             )
-            // The reference renderer moves each word independently by 6% of the text size (at
-            // least 5 px), then adds only a 3% bottom-anchored scale during the held-note phase.
-            // Keeping the transform on the word rather than the whole line is what creates the
-            // floating vocal feel. Reading the clock inside the layer block keeps the lift on the
-            // layer phase, so a 20-word line no longer recomposes 20 subtrees per frame.
+            // The reference renderer moves each word independently by ~5% of the text size (at
+            // least 4 px) for a regular word; a letter-by-letter word instead uses the real
+            // per-character spring motion computed fresh each frame here, not baked keyframes —
+            // Compose's draw phase already gives us a per-frame callback, so there's no need to
+            // sample/cache a keyframe table the way a CSS Animation timeline requires.
             .graphicsLayer {
-                translationY = -appleMusicKaraokeLiftPx(
-                    wordLiftEnabled = wordLiftEnabled,
-                    textSizePx = baseStyle.fontSize.toPx(),
-                    elapsedSinceWordStartMs = (positionMs.value - renderWord.word.startMs).coerceAtLeast(0L),
-                    wordLiftScale = wordLiftScale
-                )
+                if (characterMotion != null) {
+                    val elapsedMs = (positionMs.value - groupStartMs).coerceAtLeast(0L)
+                    val motion = appleMusicCharacterMotionAt(characterMotion, charIndexInGroup, elapsedMs)
+                    translationX = motion.translateXEm * baseStyle.fontSize.toPx()
+                    translationY = motion.translateYPx
+                    scaleX = motion.scale
+                    scaleY = motion.scale
+                } else {
+                    translationY = -animatedRestingLiftPx
+                }
                 transformOrigin = TransformOrigin(0.5f, if (rubyBelow) 0f else 1f)
             }
     ) {
