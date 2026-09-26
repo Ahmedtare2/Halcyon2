@@ -34,33 +34,76 @@ class AppleMusicLyricSpacingTest {
     fun disablingWordLiftZeroesLiftButDoesNotDisableKaraokeProgress() {
         assertEquals(
             0f,
-            appleMusicKaraokeLiftPx(wordLiftEnabled = false, textSizePx = 48f, elapsedSinceWordStartMs = 110L)
+            appleMusicKaraokeRestingLiftPx(
+                wordLiftEnabled = false, textSizePx = 48f, isActive = true, hasStarted = true
+            )
         )
         assertTrue(
-            appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 110L) > 0f
+            appleMusicKaraokeRestingLiftPx(
+                wordLiftEnabled = true, textSizePx = 48f, isActive = true, hasStarted = true
+            ) > 0f
         )
     }
 
     @Test
-    fun liftIsAFixedDurationOnsetPopNotStretchedAcrossTheWholeWord() {
-        // Was tied to the word's own fill progress (0..1 across its entire singing duration), so
-        // a short/fast word's whole rise-and-fall completed too quickly to read as a deliberate
-        // lift, while only long held notes looked like they were lifting at all. The pop must now
-        // be a fixed ~220ms duration timed to the word's onset — rising from baseline, peaking
-        // around the midpoint of that fixed window, and settling back to baseline by the end of
-        // it — regardless of whether the underlying word itself takes 150ms or 3 seconds to sing.
-        val atStart = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 0L)
-        val atMidpoint = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 110L)
-        val atPopEnd = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 220L)
-        val longAfterPopEnds = appleMusicKaraokeLiftPx(wordLiftEnabled = true, textSizePx = 48f, elapsedSinceWordStartMs = 3_000L)
-        assertEquals(0f, atStart)
-        assertTrue("should be lifted mid-pop", atMidpoint > 0f)
-        assertTrue("should have settled back down by the end of the fixed pop window", atPopEnd < atMidpoint)
+    fun liftRisesAndHoldsWhileActiveRatherThanBouncingBackDown() {
+        // Real Apple Music doesn't bounce each already-sung word back down: a word rises once it
+        // starts being sung and holds at that elevation for as long as its line stays active,
+        // falling back to baseline only once a new line takes over (isActive becomes false) —
+        // not on any fixed timer. A word that hasn't started yet, or whose line isn't the active
+        // one, must not be lifted at all.
         assertEquals(
-            "a word that finished singing long ago must not still be lifted",
+            "not started yet",
             0f,
-            longAfterPopEnds
+            appleMusicKaraokeRestingLiftPx(
+                wordLiftEnabled = true, textSizePx = 48f, isActive = true, hasStarted = false
+            )
         )
+        assertEquals(
+            "line isn't active, even if this word's own timing has technically started",
+            0f,
+            appleMusicKaraokeRestingLiftPx(
+                wordLiftEnabled = true, textSizePx = 48f, isActive = false, hasStarted = true
+            )
+        )
+        val lifted = appleMusicKaraokeRestingLiftPx(
+            wordLiftEnabled = true, textSizePx = 48f, isActive = true, hasStarted = true
+        )
+        assertTrue("active and started should be lifted", lifted > 0f)
+    }
+
+    @Test
+    fun characterMotionRespectsPerCharacterStaggerDelay() {
+        // Ported from the reference (lyrics.binimum.org / AmLyrics.ts): each character's motion
+        // starts only after its own stagger delay. For a 2s/5-char word the per-character delay
+        // is 160ms, so at 300ms elapsed the first character (delay 160ms) should already be
+        // rising while the last (delay 800ms) hasn't started at all yet.
+        val params = AppleMusicCharacterMotionParams(durationSec = 2f, charCount = 5, isCjk = false)
+        val firstChar = appleMusicCharacterMotionAt(params, charIndex = 0, elapsedSinceSyllableStartMs = 300L)
+        val lastChar = appleMusicCharacterMotionAt(params, charIndex = 4, elapsedSinceSyllableStartMs = 300L)
+        assertTrue("the first character should already be rising", firstChar.translateYPx < 0f)
+        assertEquals("the last character's delay hasn't elapsed yet", 0f, lastChar.translateYPx)
+    }
+
+    @Test
+    fun cjkCharactersGetNoEmphasisLiftOrGlowBonus() {
+        // The reference zeroes emphasis/lift/glow for CJK entirely regardless of duration —
+        // only the base rise curve applies, using a different (underdamped spring) shape too.
+        val cjkParams = AppleMusicCharacterMotionParams(durationSec = 3f, charCount = 3, isCjk = true)
+        assertEquals(0f, cjkParams.emphasis)
+        assertEquals(0f, cjkParams.glowBoost)
+        val motion = appleMusicCharacterMotionAt(cjkParams, charIndex = 1, elapsedSinceSyllableStartMs = 900L)
+        assertEquals("CJK gets no horizontal spread", 0f, motion.translateXEm)
+        assertEquals("CJK gets no scale emphasis", 1f, motion.scale)
+    }
+
+    @Test
+    fun latinEmphasisOnlyRampsInPastOneSecondOfDuration() {
+        val shortWord = AppleMusicCharacterMotionParams(durationSec = 0.6f, charCount = 4, isCjk = false)
+        val longHeldWord = AppleMusicCharacterMotionParams(durationSec = 2.5f, charCount = 4, isCjk = false)
+        assertEquals("under 1s duration gets no emphasis bonus at all", 0f, shortWord.emphasis)
+        assertTrue("a long held word gets real emphasis", longHeldWord.emphasis > 0f)
+        assertTrue("emphasis is clamped, not unbounded", longHeldWord.emphasis <= 1f)
     }
 
     @Test
