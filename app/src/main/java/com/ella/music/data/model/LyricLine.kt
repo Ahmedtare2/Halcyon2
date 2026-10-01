@@ -22,7 +22,14 @@ data class LyricLine(
 data class LyricWord(
     val text: String,
     val startMs: Long,
-    val endMs: Long
+    val endMs: Long,
+    // How many raw TTML <span> elements this word was merged from (see toDisplayWords) — 1 for
+    // an ordinary word. A source that deliberately splits a word into per-letter/per-syllable
+    // spans (e.g. "ride" as <span>r</span><span>i</span><span>d</span><span>e</span>) sets this
+    // above 1 even when the word's total sung duration is short, which is exactly the signal
+    // shouldSplitForAppleMusicCharacters uses to offer the letter-by-letter treatment to more than
+    // just long/held words.
+    val sourceSpanCount: Int = 1
 )
 
 fun LyricLine.primaryEndMs(
