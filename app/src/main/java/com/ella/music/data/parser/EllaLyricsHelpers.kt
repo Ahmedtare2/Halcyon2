@@ -89,7 +89,11 @@ internal fun List<LyricWord>.toDisplayWords(lineText: String): List<LyricWord> {
             index++
         }
         if (builder.toString() == target) {
-            result += this[startIndex].copy(text = token, endMs = endMs)
+            result += this[startIndex].copy(
+                text = token,
+                endMs = endMs,
+                sourceSpanCount = index - startIndex
+            )
         }
     }
     val resultText = result.joinToString("") { it.text }.cleanLyricText()
