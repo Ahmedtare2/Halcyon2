@@ -415,13 +415,68 @@ class AppleMusicLyricSpacingTest {
     }
 
     @Test
-    fun englishWordsAreNeverSplitIntoCharacters() {
-        assertFalse(
+    fun sustainedLatinWordsAreNowSplitJustLikeCjk() {
+        // This used to assert the opposite ("English words are never split") — stale from before
+        // Latin splitting was safely enabled by grouping exploded characters into one
+        // wrap-atomic unit (see the group-Row rendering in TimedLyricText). A held/sustained
+        // Latin word should split exactly like a held CJK phrase does above.
+        assertTrue(
             LyricWord("stranger", 0L, 4_000L)
                 .shouldSplitForAppleMusicCharacters()
         )
+    }
+
+    @Test
+    fun shortLatinWordIsNotSplitWithoutSustainOrAnExplicitSourceSplit() {
+        // A short word with no special signal (ordinary duration, one merged span) should not
+        // get the letter-by-letter treatment — that would make normal fast lyrics look twitchy.
+        assertFalse(
+            LyricWord("ride", startMs = 20_312L, endMs = 20_612L, sourceSpanCount = 1)
+                .shouldSplitForAppleMusicCharacters()
+        )
+    }
+
+    @Test
+    fun multiWordPhraseIsNeverSplitIntoCharactersEvenWhenSustained() {
+        // Splitting into one render-word per character only ever makes sense for a single word.
+        // Some sources provide phrase-level rather than word-level spans, so a LyricWord can
+        // legitimately contain embedded spaces — without this guard, a sustained phrase like this
+        // would qualify via duration alone and explode into one "character" per letter *and* per
+        // space.
         assertFalse(
             LyricWord("falling in love in stranger", 0L, 4_000L)
+                .shouldSplitForAppleMusicCharacters()
+        )
+    }
+
+    @Test
+    fun explicitlySplitSourceSpansTriggerLetterByLetterRegardlessOfDuration() {
+        // Real TTML sometimes spells a word out as one <span> per letter even when the whole
+        // word is sung quickly — e.g. "ride" as <span>r</span><span>i</span><span>d</span>
+        // <span>e</span>, well under a second total. That's an explicit authoring signal
+        // toDisplayWords preserves as sourceSpanCount, and it should trigger the same
+        // letter-by-letter treatment a long held word gets, even though this one is short.
+        assertTrue(
+            LyricWord("ride", startMs = 20_312L, endMs = 20_612L, sourceSpanCount = 4)
+                .shouldSplitForAppleMusicCharacters()
+        )
+        assertTrue(
+            LyricWord("my", startMs = 24_162L, endMs = 24_362L, sourceSpanCount = 2)
+                .shouldSplitForAppleMusicCharacters()
+        )
+        // A single merged span (sourceSpanCount == 1, the default) must not trigger this on its
+        // own for a short word — only an actual multi-span source split should.
+        assertFalse(
+            LyricWord("my", startMs = 24_162L, endMs = 24_362L, sourceSpanCount = 1)
+                .shouldSplitForAppleMusicCharacters()
+        )
+    }
+
+    @Test
+    fun singleCharacterWordsNeverSplitEvenWhenSourceMarksThemAsSplit() {
+        // A one-letter word has nothing left to split into.
+        assertFalse(
+            LyricWord("I", startMs = 0L, endMs = 4_000L, sourceSpanCount = 3)
                 .shouldSplitForAppleMusicCharacters()
         )
     }
