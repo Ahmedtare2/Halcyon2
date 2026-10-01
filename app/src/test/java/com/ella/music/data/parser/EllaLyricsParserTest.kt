@@ -10,6 +10,44 @@ import org.junit.Test
 
 class EllaLyricsParserTest {
     @Test
+    fun toDisplayWordsPreservesHowManySourceSpansEachWordWasMergedFrom() {
+        // Mirrors a real pattern found in actual TTML lyric files: a word spelled out as one
+        // <span> per letter with no whitespace between them — "ride" as r/i/d/e. The merge must
+        // still combine them into one "ride" word (unchanged behavior), but now also has to
+        // remember it came from 4 raw spans, not 1 — that's the signal
+        // shouldSplitForAppleMusicCharacters uses to offer letter-by-letter treatment to short
+        // words the TTML source explicitly split, not just long/held ones.
+        val rawSpans = listOf(
+            LyricWord("r", 20_312L, 20_387L),
+            LyricWord("i", 20_387L, 20_462L),
+            LyricWord("d", 20_462L, 20_537L),
+            LyricWord("e", 20_537L, 20_612L)
+        )
+
+        val merged = rawSpans.toDisplayWords("ride")
+
+        assertEquals(1, merged.size)
+        assertEquals("ride", merged.single().text)
+        assertEquals(20_312L, merged.single().startMs)
+        assertEquals(20_612L, merged.single().endMs)
+        assertEquals(4, merged.single().sourceSpanCount)
+    }
+
+    @Test
+    fun toDisplayWordsGivesOrdinaryWordsASourceSpanCountOfOne() {
+        // A line with one span per real word (the common case) should not report any merging.
+        val rawSpans = listOf(
+            LyricWord("hello", 0L, 400L),
+            LyricWord(" world", 400L, 900L)
+        )
+
+        val merged = rawSpans.toDisplayWords("hello world")
+
+        assertEquals(2, merged.size)
+        assertTrue(merged.all { it.sourceSpanCount == 1 })
+    }
+
+    @Test
     fun enhancedLrcKeepsExplicitSpacesAcrossCjkAndLatinTokens() {
         val result = EllaLyricsParser.parse(
             """
