@@ -1188,7 +1188,20 @@ private fun List<LyricWord>.toAppleMusicRenderWords(
 internal fun LyricWord.shouldSplitForAppleMusicCharacters(
     sustainThresholdMs: Int = SettingsManager.DEFAULT_APPLE_MUSIC_LYRICS_SUSTAIN_THRESHOLD_MS
 ): Boolean {
-    if (endMs - startMs < sustainThresholdMs.coerceAtLeast(0).toLong() || text.length <= 1) return false
+    // This splits a single word into one render-word per character — never meaningful for a
+    // LyricWord that's actually a whole multi-word phrase (some sources provide phrase-level
+    // rather than word-level spans). Without this guard, a sustained multi-word phrase would now
+    // qualify via duration alone and explode into one "character" per letter *and* per space.
+    if (text.length <= 1 || text.any { it.isWhitespace() }) return false
+    val isSustainedByDuration = endMs - startMs >= sustainThresholdMs.coerceAtLeast(0).toLong()
+    // A source that deliberately splits a word into per-letter/per-syllable spans — e.g. "ride"
+    // as <span>r</span><span>i</span><span>d</span><span>e</span> — wants the letter-by-letter
+    // treatment regardless of how short the word's total sung duration is. That's an explicit
+    // authoring signal (see LyricWord.sourceSpanCount / toDisplayWords), not something a duration
+    // heuristic alone can see: plenty of real TTML splits words this way well under any
+    // "long/held word" threshold.
+    val isExplicitlySplitInSource = sourceSpanCount > 1
+    if (!isSustainedByDuration && !isExplicitlySplitInSource) return false
     // Used to exclude Latin script entirely: a word split into one FlowRow-style item per
     // character could break apart across a line wrap ("stranger" -> "stra" / "nger"). Now that
     // the renderer groups every character sharing a characterGroupKey into one non-wrapping unit
