@@ -193,7 +193,8 @@ internal fun TimedLyricText(
     rubyStyle: TextStyle? = null,
     onWordClick: ((Long) -> Unit)? = null,
     onLongPress: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isBackgroundVocal: Boolean = false
 ) {
     // TTML may encode the blank before a word as part of that word. Move it to the prior
     // karaoke unit before wrapping so every v1 line, including wrapped continuations, starts
@@ -205,7 +206,7 @@ internal fun TimedLyricText(
         }
     }
     val timedWords = remember(text, sourceWords, sustainThresholdMs) {
-        sourceWords.toAppleMusicRenderWords(text, sustainThresholdMs)
+        sourceWords.toAppleMusicRenderWords(text, sustainThresholdMs, isBackgroundVocal)
     }
     val rubies = remember(timedWords, pronunciation, pronunciationWords) {
         rubiesForTimedWords(
@@ -1128,7 +1129,8 @@ private data class AppleMusicRenderWord(
 
 private fun List<LyricWord>.toAppleMusicRenderWords(
     lineText: String,
-    sustainThresholdMs: Int
+    sustainThresholdMs: Int,
+    isBackgroundVocal: Boolean = false
 ): List<AppleMusicRenderWord> {
     if (isEmpty() || lineText.isBlank()) return emptyList()
     val result = mutableListOf<AppleMusicRenderWord>()
@@ -1145,7 +1147,7 @@ private fun List<LyricWord>.toAppleMusicRenderWords(
             else -> ""
         }
         val duration = word.endMs - word.startMs
-        val splitForCharacters = word.shouldSplitForAppleMusicCharacters(sustainThresholdMs)
+        val splitForCharacters = word.shouldSplitForAppleMusicCharacters(sustainThresholdMs, isBackgroundVocal)
         if (splitForCharacters) {
             val chars = word.text.toCharArray()
             val segmentDuration = duration / chars.size
@@ -1186,28 +1188,38 @@ private fun List<LyricWord>.toAppleMusicRenderWords(
  * timed phrases into character-sized children so wrapped rows can complete from top to bottom.
  */
 internal fun LyricWord.shouldSplitForAppleMusicCharacters(
-    sustainThresholdMs: Int = SettingsManager.DEFAULT_APPLE_MUSIC_LYRICS_SUSTAIN_THRESHOLD_MS
+    sustainThresholdMs: Int = SettingsManager.DEFAULT_APPLE_MUSIC_LYRICS_SUSTAIN_THRESHOLD_MS,
+    isBackgroundVocal: Boolean = false
 ): Boolean {
-    // This splits a single word into one render-word per character — never meaningful for a
-    // LyricWord that's actually a whole multi-word phrase (some sources provide phrase-level
-    // rather than word-level spans). Without this guard, a sustained multi-word phrase would now
-    // qualify via duration alone and explode into one "character" per letter *and* per space.
-    if (text.length <= 1 || text.any { it.isWhitespace() }) return false
-    val isSustainedByDuration = endMs - startMs >= sustainThresholdMs.coerceAtLeast(0).toLong()
-    // A source that deliberately splits a word into per-letter/per-syllable spans — e.g. "ride"
-    // as <span>r</span><span>i</span><span>d</span><span>e</span> — wants the letter-by-letter
-    // treatment regardless of how short the word's total sung duration is. That's an explicit
-    // authoring signal (see LyricWord.sourceSpanCount / toDisplayWords), not something a duration
-    // heuristic alone can see: plenty of real TTML splits words this way well under any
-    // "long/held word" threshold.
-    val isExplicitlySplitInSource = sourceSpanCount > 1
-    if (!isSustainedByDuration && !isExplicitlySplitInSource) return false
-    // Used to exclude Latin script entirely: a word split into one FlowRow-style item per
-    // character could break apart across a line wrap ("stranger" -> "stra" / "nger"). Now that
-    // the renderer groups every character sharing a characterGroupKey into one non-wrapping unit
-    // before handing it to the row layout (see groupIntoWrapAtomicUnits), the whole exploded word
-    // wraps as a single piece the same way it did unsplit, so this is safe for Latin too.
-    return text.any { it.isAppleMusicLatinLetter() || it.isAppleMusicCjkCharacter() }
+    // Faithful port of the reference's characterMotionMode (lyrics.binimum.org / AmLyrics.ts) —
+    // a pure function of text + duration + background-vocal status. An earlier version of this
+    // function also tried to trigger on sourceSpanCount (how many raw TTML spans a word was
+    // merged from, e.g. "ride" as four separate <span> letters) — the real engine has no such
+    // concept at all; that's removed here rather than kept alongside the actual rules.
+    if (text.isRtlText()) return false
+    // Splitting into one render-word per character only ever makes sense for a single word.
+    // Halcyon's LyricWord can (unlike the reference's own representation) sometimes be a whole
+    // multi-word phrase when a source provides phrase-level rather than word-level spans — the
+    // reference has no equivalent case to guard against, but this one does need it.
+    if (text.any { it.isWhitespace() }) return false
+    val count = text.trim().length
+    if (count == 0) return false
+    return if (text.any { it.isAppleMusicCjkCharacter() }) {
+        // Any multi-character CJK phrase qualifies — the reference applies no duration floor to
+        // CJK at all. The previous version of this function incorrectly required CJK to also
+        // cross the sustain threshold; a fast-sung multi-character CJK phrase should still split.
+        count > 1
+    } else {
+        // Non-CJK, non-RTL (effectively Latin and similar scripts): not a background vocal, held
+        // at least the sustain threshold (the reference hardcodes 1000ms; kept as this app's
+        // existing configurable setting instead of a new hardcoded constant), and no longer than
+        // 7 characters — a ceiling the previous version of this function was missing entirely, so
+        // a long word like "stranger" (8 characters) must NOT split, unlike before.
+        val durationMs = endMs - startMs
+        !isBackgroundVocal &&
+            durationMs >= sustainThresholdMs.coerceAtLeast(0).toLong() &&
+            count <= 7
+    }
 }
 
 private fun Char.isAppleMusicLatinLetter(): Boolean = this in 'a'..'z' || this in 'A'..'Z'

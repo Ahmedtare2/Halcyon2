@@ -463,7 +463,8 @@ internal fun AppleMusicLyricLine(
                     sustainGlowScale = sustainGlowScale,
                     singleLine = singleLine,
                     onLongPress = onLongClick,
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    isBackgroundVocal = true
                 )
                 line.backgroundTranslation?.takeIf { showTranslation && it.isNotBlank() }?.let { translation ->
                     BasicText(
