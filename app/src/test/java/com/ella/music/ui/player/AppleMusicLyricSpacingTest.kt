@@ -408,30 +408,84 @@ class AppleMusicLyricSpacingTest {
             LyricWord("星空下拥抱着快凋零的温存", 0L, 4_000L)
                 .shouldSplitForAppleMusicCharacters()
         )
-        assertFalse(
+        // Was asserted False here — wrong under the real rule (ported from the reference's
+        // characterMotionMode): CJK has no duration floor at all, only a >1-character
+        // requirement. Two characters at 800ms still qualifies; duration is irrelevant for CJK.
+        assertTrue(
             LyricWord("星空", 0L, 800L)
                 .shouldSplitForAppleMusicCharacters()
         )
     }
 
     @Test
-    fun sustainedLatinWordsAreNowSplitJustLikeCjk() {
-        // This used to assert the opposite ("English words are never split") — stale from before
-        // Latin splitting was safely enabled by grouping exploded characters into one
-        // wrap-atomic unit (see the group-Row rendering in TimedLyricText). A held/sustained
-        // Latin word should split exactly like a held CJK phrase does above.
+    fun singleCjkCharacterNeverQualifiesRegardlessOfDuration() {
+        assertFalse(
+            LyricWord("星", 0L, 4_000L)
+                .shouldSplitForAppleMusicCharacters()
+        )
+    }
+
+    @Test
+    fun sustainedLatinWordWithinTheSevenCharacterCeilingSplits() {
+        // "stretch" is exactly 7 characters — the inclusive boundary.
         assertTrue(
+            LyricWord("stretch", 0L, 4_000L)
+                .shouldSplitForAppleMusicCharacters()
+        )
+    }
+
+    @Test
+    fun latinWordOverSevenCharactersNeverSplitsEvenWhenHeld() {
+        // Was asserted True here under an earlier (incorrect) version of this function with no
+        // upper bound at all. The real rule (ported from the reference) caps Latin at 7
+        // characters regardless of duration — "stranger" is 8, so it must NOT split.
+        assertFalse(
             LyricWord("stranger", 0L, 4_000L)
                 .shouldSplitForAppleMusicCharacters()
         )
     }
 
     @Test
-    fun shortLatinWordIsNotSplitWithoutSustainOrAnExplicitSourceSplit() {
-        // A short word with no special signal (ordinary duration, one merged span) should not
-        // get the letter-by-letter treatment — that would make normal fast lyrics look twitchy.
+    fun shortLatinWordIsNotSplitWithoutSustain() {
+        // A short word with ordinary duration should not get the letter-by-letter treatment —
+        // that would make normal fast lyrics look twitchy. There is no longer any
+        // "explicitly split in the source" override for this (see sourceSpanCount removal below):
+        // the real engine decides purely from text and duration, nothing else.
         assertFalse(
-            LyricWord("ride", startMs = 20_312L, endMs = 20_612L, sourceSpanCount = 1)
+            LyricWord("ride", startMs = 20_312L, endMs = 20_612L)
+                .shouldSplitForAppleMusicCharacters()
+        )
+    }
+
+    @Test
+    fun sourceSpanCountNoLongerInfluencesTheDecision() {
+        // An earlier version of this function also triggered on sourceSpanCount (how many raw
+        // TTML spans a word was merged from) to catch cases like "ride" spelled out as one <span>
+        // per letter — the real engine (lyrics.binimum.org / AmLyrics.ts) has no such concept at
+        // all, so a short word must stay unsplit regardless of how many spans it came from.
+        assertFalse(
+            LyricWord("ride", startMs = 20_312L, endMs = 20_612L, sourceSpanCount = 4)
+                .shouldSplitForAppleMusicCharacters()
+        )
+    }
+
+    @Test
+    fun backgroundVocalsNeverGetLetterByLetterTreatment() {
+        assertFalse(
+            LyricWord("forever", startMs = 0L, endMs = 4_000L)
+                .shouldSplitForAppleMusicCharacters(isBackgroundVocal = true)
+        )
+        // Same word, same duration, not a background vocal -> splits normally.
+        assertTrue(
+            LyricWord("forever", startMs = 0L, endMs = 4_000L)
+                .shouldSplitForAppleMusicCharacters(isBackgroundVocal = false)
+        )
+    }
+
+    @Test
+    fun rtlTextNeverGetsLetterByLetterTreatment() {
+        assertFalse(
+            LyricWord("مرحبا", startMs = 0L, endMs = 4_000L)
                 .shouldSplitForAppleMusicCharacters()
         )
     }
@@ -442,7 +496,8 @@ class AppleMusicLyricSpacingTest {
         // Some sources provide phrase-level rather than word-level spans, so a LyricWord can
         // legitimately contain embedded spaces — without this guard, a sustained phrase like this
         // would qualify via duration alone and explode into one "character" per letter *and* per
-        // space.
+        // space. The reference has no equivalent case to guard against (its own data
+        // representation never has a multi-word "word"), but Halcyon's does.
         assertFalse(
             LyricWord("falling in love in stranger", 0L, 4_000L)
                 .shouldSplitForAppleMusicCharacters()
@@ -450,33 +505,19 @@ class AppleMusicLyricSpacingTest {
     }
 
     @Test
-    fun explicitlySplitSourceSpansTriggerLetterByLetterRegardlessOfDuration() {
-        // Real TTML sometimes spells a word out as one <span> per letter even when the whole
-        // word is sung quickly — e.g. "ride" as <span>r</span><span>i</span><span>d</span>
-        // <span>e</span>, well under a second total. That's an explicit authoring signal
-        // toDisplayWords preserves as sourceSpanCount, and it should trigger the same
-        // letter-by-letter treatment a long held word gets, even though this one is short.
+    fun singleLatinCharacterCanQualifyIfHeldLongEnough() {
+        // Unlike CJK (which explicitly requires count > 1), the reference places no lower bound
+        // on Latin character count — only the sustain threshold and the 7-character ceiling.
+        // A single held letter ("I" drawn out in a ballad, say) legitimately qualifies; this
+        // isn't a bug to guard against, it's the real rule. A single CJK character is covered
+        // separately by singleCjkCharacterNeverQualifiesRegardlessOfDuration above.
         assertTrue(
-            LyricWord("ride", startMs = 20_312L, endMs = 20_612L, sourceSpanCount = 4)
+            LyricWord("I", startMs = 0L, endMs = 4_000L)
                 .shouldSplitForAppleMusicCharacters()
         )
-        assertTrue(
-            LyricWord("my", startMs = 24_162L, endMs = 24_362L, sourceSpanCount = 2)
-                .shouldSplitForAppleMusicCharacters()
-        )
-        // A single merged span (sourceSpanCount == 1, the default) must not trigger this on its
-        // own for a short word — only an actual multi-span source split should.
         assertFalse(
-            LyricWord("my", startMs = 24_162L, endMs = 24_362L, sourceSpanCount = 1)
-                .shouldSplitForAppleMusicCharacters()
-        )
-    }
-
-    @Test
-    fun singleCharacterWordsNeverSplitEvenWhenSourceMarksThemAsSplit() {
-        // A one-letter word has nothing left to split into.
-        assertFalse(
-            LyricWord("I", startMs = 0L, endMs = 4_000L, sourceSpanCount = 3)
+            "a single character still needs the sustain threshold like any other Latin word",
+            LyricWord("I", startMs = 0L, endMs = 200L)
                 .shouldSplitForAppleMusicCharacters()
         )
     }
